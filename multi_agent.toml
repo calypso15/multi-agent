@@ -1,0 +1,18 @@
+[general]
+file_patterns = ["*.md", "*.txt"]
+consensus_threshold = 2
+timeout_seconds = 600
+canon_directories = ["canon"]
+max_canon_size_kb = 500
+
+[agents.scientific_rigor]
+enabled = true
+model = "claude-sonnet-4-6"
+
+[agents.canon_continuity]
+enabled = true
+model = "claude-sonnet-4-6"
+
+[agents.sociopolitical]
+enabled = true
+model = "claude-sonnet-4-6"

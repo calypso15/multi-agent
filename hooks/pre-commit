@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# multi-agent-consensus-hook
+# Multi-agent consensus pre-commit hook
+# Install via: python -m multi_agent install-hook
+# This file is a reference copy. The actual hook is installed to .git/hooks/
+
+PYTHON="${MULTI_AGENT_PYTHON:-python3}"
+
+# Check if any text files are staged
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(md|txt)$')
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+# Check that multi_agent is available
+if ! "$PYTHON" -c "import multi_agent" 2>/dev/null; then
+    echo "Error: multi_agent package not found." >&2
+    echo "Install it with: pip install -e /path/to/multi-agent" >&2
+    exit 1
+fi
+
+echo "Running multi-agent fiction review..."
+"$PYTHON" -m multi_agent review --hook-mode
+exit $?
