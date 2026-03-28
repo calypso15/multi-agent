@@ -330,10 +330,18 @@ def uninstall_hook(ctx: click.Context) -> None:
 
 @main.command("check-config")
 @click.option("--config", "config_path", type=click.Path(exists=True), default=None)
-def check_config(config_path: str | None) -> None:
+@click.pass_context
+def check_config(ctx: click.Context, config_path: str | None) -> None:
     """Validate and display the current configuration."""
     try:
-        config = load_config(Path(config_path) if config_path else None)
+        repo_root = _resolve_repo(ctx)
+    except Exception:
+        repo_root = None
+    try:
+        config = load_config(
+            Path(config_path) if config_path else None,
+            search_from=repo_root,
+        )
     except Exception as exc:
         print_error(f"Invalid configuration: {exc}")
         sys.exit(1)
@@ -343,10 +351,15 @@ def check_config(config_path: str | None) -> None:
     console.print(f"  Consensus threshold: {config.general.consensus_threshold}")
     console.print(f"  Timeout: {config.general.timeout_seconds}s")
     console.print(f"  Max rounds: {config.general.max_rounds}")
+    console.print(f"  Min severity: {config.general.min_severity}")
+    console.print(f"  Propose max turns: {config.general.propose_max_turns}")
+    console.print(f"  Review max turns: {config.general.review_max_turns}")
     console.print(f"  Canon directories: {config.general.canon_directories}")
     console.print()
     console.print("[bold]Agents:[/bold]")
     for name, agent in config.agents.items():
         status = "[green]enabled[/green]" if agent.enabled else "[red]disabled[/red]"
         model = agent.model or "default"
-        console.print(f"  {name}: {status} (model: {model})")
+        review_model = agent.review_model or model
+        tools = ", ".join(agent.allowed_tools) if agent.allowed_tools else "none"
+        console.print(f"  {name}: {status} (propose: {model}, review: {review_model}, tools: {tools})")

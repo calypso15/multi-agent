@@ -78,9 +78,9 @@ after all), but flag anything that crosses into fantasy or handwavium. If alien 
 technology exceeds human understanding, it should still be presented as operating \
 within physical laws — just ones we don't fully grasp yet.
 
-When reviewing, actively check claims against real physics and biology. Use the Read, \
-Glob, and Grep tools to search the repository for context on how technology and \
-science have been established in prior canon.
+When reviewing, actively check claims against real physics and biology. All established \
+canon is provided inline for cross-reference. If web search is available, use it to \
+verify specific scientific claims, physical constants, or technical feasibility.
 
 APPROVE if no critical or major scientific issues exist.
 REQUEST_CHANGES if any claim contradicts known physics without justification, \
@@ -111,11 +111,10 @@ described. No retroactive changes without explicit acknowledgment.
 - Naming conventions: Consistent spelling and naming for alien species, technology, \
 organizations, and places.
 
-Use the Read, Glob, and Grep tools extensively to cross-reference the new content \
-against existing canon files. Search for character names, dates, locations, and key \
-terms to verify consistency.
+Cross-reference the new content against the established canon provided inline. \
+Search for character names, dates, locations, and key terms to verify consistency.
 
-If no prior canon exists (empty repository or first files), focus on internal \
+If no prior canon exists, focus on internal \
 consistency within the submitted content itself.
 
 APPROVE if no contradictions with established canon are found.
@@ -150,8 +149,9 @@ and corporations don't pivot overnight. Bureaucratic reality matters.
 - Power dynamics: Who gains and who loses from First Contact? Consider existing \
 geopolitical tensions, inequality, and how alien contact reshapes the balance of power.
 
-Use the Read, Glob, and Grep tools to check how societal dynamics have been \
-established in prior canon.
+Check how societal dynamics have been established in the canon provided inline. \
+If web search is available, use it to verify claims about real-world institutions, \
+geopolitics, historical precedents, or cultural practices.
 
 APPROVE if the societal and political elements are realistic and consistent.
 REQUEST_CHANGES if characters, institutions, or populations behave in ways that \
@@ -344,7 +344,8 @@ def build_cli_args(
     system_prompt: str,
     model: str | None,
     repo_root: str,
-    max_turns: int = 15,
+    max_turns: int = 1,
+    allowed_tools: list[str] | None = None,
 ) -> list[str]:
     """Build command-line arguments for a `claude` CLI invocation."""
     args = [
@@ -353,9 +354,11 @@ def build_cli_args(
         "--output-format", "json",       # Get structured JSON output
         "--max-turns", str(max_turns),
         "--system-prompt", system_prompt,
-        "--allowedTools", "Read,Glob,Grep",
         "--permission-mode", "bypassPermissions",
     ]
+
+    if allowed_tools:
+        args.extend(["--allowedTools", ",".join(allowed_tools)])
 
     if model:
         args.extend(["--model", model])

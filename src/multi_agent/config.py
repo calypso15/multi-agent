@@ -11,7 +11,9 @@ from pathlib import Path
 class AgentConfig:
     enabled: bool = True
     model: str | None = None
+    review_model: str | None = None
     system_prompt_override: str | None = None
+    allowed_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -22,6 +24,9 @@ class GeneralConfig:
     canon_directories: list[str] = field(default_factory=lambda: ["canon"])
     max_canon_size_kb: int = 500
     max_rounds: int = 3
+    min_severity: str = "minor"
+    propose_max_turns: int = 3
+    review_max_turns: int = 2
 
 
 @dataclass
@@ -73,7 +78,8 @@ def load_config(
         for fld in (
             "file_patterns", "consensus_threshold",
             "timeout_seconds", "canon_directories", "max_canon_size_kb",
-            "max_rounds",
+            "max_rounds", "min_severity",
+            "propose_max_turns", "review_max_turns",
         ):
             if fld in g:
                 setattr(config.general, fld, g[fld])
@@ -83,7 +89,9 @@ def load_config(
             agent_cfg = AgentConfig(
                 enabled=agent_raw.get("enabled", True),
                 model=agent_raw.get("model"),
+                review_model=agent_raw.get("review_model"),
                 system_prompt_override=agent_raw.get("system_prompt_override"),
+                allowed_tools=agent_raw.get("allowed_tools", []),
             )
             config.agents[name] = agent_cfg
 
@@ -97,5 +105,11 @@ def load_config(
         raise ValueError("At least 2 agents must be enabled")
     if config.general.max_rounds < 1:
         raise ValueError("max_rounds must be at least 1")
+    valid_severities = ("critical", "major", "minor", "suggestion")
+    if config.general.min_severity not in valid_severities:
+        raise ValueError(
+            f"min_severity must be one of {valid_severities}, "
+            f"got '{config.general.min_severity}'"
+        )
 
     return config

@@ -1,20 +1,25 @@
 # Multi-Agent Fiction Review
 
-A consensus-based review system for collaborative fiction worldbuilding. Three specialized AI agents review your writing in parallel and must reach majority agreement before changes are committed.
+A consensus-based review system for collaborative fiction worldbuilding. Three specialized AI agents propose changes to your writing, review each other's proposals, and iterate until they reach agreement — then present the final edits for your approval.
 
 Built for a hard sci-fi universe set on Earth, post-First Contact. Powered by the Claude Code CLI using your existing Claude Max subscription.
 
 ## How It Works
 
-When you commit changes to fiction files (`.md`, `.txt`), a pre-commit hook launches three reviewer agents in parallel:
+When you run a review (manually or via pre-commit hook), the system launches three specialist agents:
 
 | Agent | Focus |
 |---|---|
-| **Scientific Rigor** | Physics, biology, chemistry, technology plausibility. Ensures hard sci-fi standards. |
-| **Canon Continuity** | Cross-references against all existing files. Catches timeline contradictions, character inconsistencies, naming errors. |
-| **Sociopolitical** | Evaluates government responses, cultural shifts, economic impacts, institutional reactions for realism. |
+| **Scientific Rigor** | Physics, biology, chemistry, technology plausibility. Ensures hard sci-fi standards. Can web-search to verify claims. |
+| **Canon Continuity** | Cross-references against all existing canon files. Catches timeline contradictions, character inconsistencies, naming errors. |
+| **Sociopolitical** | Evaluates government responses, cultural shifts, economic impacts, institutional reactions for realism. Can web-search to verify real-world references. |
 
-Each agent returns **APPROVE** or **REQUEST_CHANGES**. The commit proceeds only if at least 2 out of 3 agents approve (majority consensus).
+The review runs in phases:
+
+1. **Propose** — Each agent proposes concrete edits (search-and-replace) from their specialty perspective, running in parallel.
+2. **Review** — All agents review all proposals. Each either approves or suggests modifications.
+3. **Iterate** — If consensus isn't reached, modifications are merged and agents review again (up to `max_rounds`).
+4. **Present** — The final set of changes is shown as a unified diff. You choose whether to apply them.
 
 ## Prerequisites
 
@@ -24,181 +29,206 @@ Each agent returns **APPROVE** or **REQUEST_CHANGES**. The commit proceeds only 
 ## Setup
 
 ```bash
-# Clone and enter the repo
+# Clone the tool
+git clone https://github.com/calypso15/multi-agent.git
 cd multi-agent
 
 # Create a virtual environment and install
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-
-# Install the git pre-commit hook
-python -m multi_agent install-hook
 ```
 
-Verify your configuration:
+Then set up your fiction repository:
 
 ```bash
-python -m multi_agent check-config
+# Copy the example config to your fiction repo
+cp multi_agent.example.toml ~/git/my-novel/multi_agent.toml
+
+# Edit it to match your project structure
+vim ~/git/my-novel/multi_agent.toml
+
+# Optionally install the pre-commit hook
+python -m multi_agent --repo ~/git/my-novel install-hook
+```
+
+Verify configuration:
+
+```bash
+python -m multi_agent --repo ~/git/my-novel check-config
 ```
 
 ## Usage
 
-### Writing and committing fiction
-
-Place your fiction files in the `canon/` directory (or any directory listed in `canon_directories` in the config). When you commit, the review runs automatically:
+### Reviewing existing files
 
 ```bash
-# Write your content
-vim canon/chapter-01.md
+# Review specific files
+python -m multi_agent --repo ~/git/my-novel review-files canon/chapter-01.md
 
-# Stage and commit — the review triggers automatically
-git add canon/chapter-01.md
-git commit -m "Add chapter 1"
+# Review a directory
+python -m multi_agent --repo ~/git/my-novel review-files canon/
+
+# Dry run — show proposed changes without applying
+python -m multi_agent --repo ~/git/my-novel review-files --dry-run canon/chapter-01.md
 ```
 
-If consensus is reached, the commit proceeds. If not, you'll see specific issues with quotes and suggestions:
+### Reviewing staged changes
+
+```bash
+# Run the same review the pre-commit hook would
+python -m multi_agent --repo ~/git/my-novel review
+```
+
+### Pre-commit hook
+
+When installed, the hook runs automatically on `git commit`. If agents propose changes, they are applied to the working tree and the commit is aborted so you can review them before re-committing.
+
+```bash
+# Install
+python -m multi_agent --repo ~/git/my-novel install-hook
+
+# Bypass when needed
+git commit --no-verify -m "Fix typo"
+
+# Uninstall
+python -m multi_agent --repo ~/git/my-novel uninstall-hook
+```
+
+### Example output
 
 ```
 ╭─ Multi-Agent Fiction Review ─────────────────────────────────╮
 │  Reviewing 1 file(s): canon/chapter-03.md                    │
 │  Canon context: 4 files (23 KB)                              │
 ╰──────────────────────────────────────────────────────────────╯
+  Scientific Rigor: proposing
+  Canon Continuity: proposing
+  Sociopolitical: proposing
+  Scientific Rigor: done — 1 edit(s)
+  Canon Continuity: done — 2 edit(s)
+  Sociopolitical: done — 0 edit(s)
 
-  Scientific Rigor        APPROVE           8.2s
-  Canon Continuity        REQUEST_CHANGES  12.1s
-  Sociopolitical          APPROVE           9.7s
+╭─ Propose Phase Complete ─────────────────────────────────────╮
+╰──────────────────────────────────────────────────────────────╯
+  Scientific Rigor: reviewing (round 1)
+  Canon Continuity: reviewing (round 1)
+  Sociopolitical: reviewing (round 1)
 
-╭─ APPROVED (2/3) ────────────────────────────────────────────╮
-│  Consensus reached (2/3). Commit may proceed.               │
-╰─────────────────────────────────────────────────────────────╯
+╭─ Review Round 1  (3/3 approved, need 2) ─────────────────────╮
+╰──────────────────────────────────────────────────────────────╯
 
-Canon Continuity Issues:
-  [major] canon/chapter-03.md
-    "Ambassador Chen arrived in Geneva on March 15th"
-    In chapter-01.md, Chen is established as being in Beijing until March 20th.
-    Suggestion: Change the date to March 21st or later.
+╭─ CONSENSUS ──────────────────────────────────────────────────╮
+│  Consensus reached (3/3). All agents approve the proposed    │
+│  changes.                                                    │
+╰──────────────────────────────────────────────────────────────╯
 
-Duration: 12.3s
+╭─ Proposed Changes ───────────────────────────────────────────╮
+--- a/canon/chapter-03.md
++++ b/canon/chapter-03.md
+@@ -12,7 +12,7 @@
+-The ship accelerated to 3c using conventional thrusters.
++The ship accelerated to 0.3c using conventional thrusters.
+╰──────────────────────────────────────────────────────────────╯
+
+╭─ Usage ──────────────────────────────────────────────────────╮
+│  Input tokens              45,230                             │
+│    Cache read              38,000                             │
+│  Output tokens              1,450                             │
+│  Total cost               $0.0842                             │
+│  Duration                  18.3s                              │
+╰──────────────────────────────────────────────────────────────╯
+
+Apply these changes? [y/N]
 ```
-
-To bypass the review (e.g., for non-fiction files or quick fixes):
-
-```bash
-git commit --no-verify -m "Fix typo"
-```
-
-### Reviewing existing files
-
-Review files that are already committed or on disk without making a new commit:
-
-```bash
-# Review specific files
-python -m multi_agent review-files canon/chapter-01.md canon/chapter-02.md
-
-# Review all canon files
-python -m multi_agent review-files canon/*.md
-```
-
-### Reviewing staged changes manually
-
-Run the same review the pre-commit hook would, without actually committing:
-
-```bash
-git add canon/chapter-04.md
-python -m multi_agent review
-```
-
-### Working with a separate repository
-
-If your fiction lives in a different repo, use the global `--repo` flag (before the subcommand):
-
-```bash
-# Review files in another repo
-python -m multi_agent --repo ~/git/my-novel review-files canon/*.md
-
-# Review staged changes in another repo
-python -m multi_agent --repo ~/git/my-novel review
-
-# Install the pre-commit hook into another repo
-python -m multi_agent --repo ~/git/my-novel install-hook
-```
-
-You can also place a `multi_agent.toml` in the target repo to customize its settings independently.
 
 ## Configuration
 
-Settings are in `multi_agent.toml` at the project root:
+Place a `multi_agent.toml` in your fiction repository. See `multi_agent.example.toml` for a fully commented example.
 
-```toml
-[general]
-file_patterns = ["*.md", "*.txt"]   # Which files to review
-consensus_threshold = 2              # Approvals needed (out of enabled agents)
-timeout_seconds = 120                # Max time per agent
-canon_directories = ["canon"]        # Where fiction files live
-max_canon_size_kb = 500              # Max canon context sent to agents
-
-[agents.scientific_rigor]
-enabled = true
-model = "claude-sonnet-4-6"          # Model for this agent
-
-[agents.canon_continuity]
-enabled = true
-model = "claude-sonnet-4-6"
-
-[agents.sociopolitical]
-enabled = true
-model = "claude-sonnet-4-6"
-```
-
-### Configuration options
+### General options
 
 | Option | Default | Description |
 |---|---|---|
 | `file_patterns` | `["*.md", "*.txt"]` | Glob patterns for files to review |
-| `consensus_threshold` | `2` | Minimum approvals required |
-| `timeout_seconds` | `120` | Per-agent timeout |
-| `canon_directories` | `["canon"]` | Directories containing fiction files |
-| `max_canon_size_kb` | `500` | Max total size of canon context |
+| `consensus_threshold` | `2` | Minimum approvals required for consensus |
+| `timeout_seconds` | `600` | Per-agent timeout in seconds |
+| `canon_directories` | `["canon"]` | Directories containing established fiction files |
+| `max_canon_size_kb` | `500` | Max total size of canon context loaded |
+| `max_rounds` | `3` | Maximum propose-review iteration rounds |
+| `min_severity` | `"minor"` | Minimum severity for proposed edits: `"critical"`, `"major"`, `"minor"`, or `"suggestion"`. Set to `"major"` to skip nitpicks. |
+| `propose_max_turns` | `3` | Max turns per agent in the propose phase |
+| `review_max_turns` | `2` | Max turns per agent in review rounds |
 
 ### Agent options
 
 Each agent under `[agents.<name>]` supports:
 
-| Option | Description |
-|---|---|
-| `enabled` | `true`/`false` — disable an agent to skip it |
-| `model` | Claude model to use (e.g., `claude-sonnet-4-6`, `claude-opus-4-6`) |
-| `system_prompt_override` | Replace the built-in system prompt entirely |
+| Option | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Disable an agent to skip it |
+| `model` | — | Claude model for the propose phase (e.g., `claude-sonnet-4-6`) |
+| `review_model` | same as `model` | Model for review rounds (e.g., `claude-haiku-4-5-20251001` for speed) |
+| `allowed_tools` | `[]` | Tools available during the propose phase (e.g., `["WebSearch", "WebFetch"]`) |
+| `system_prompt_override` | — | Replace the built-in system prompt entirely |
+
+### Example config
+
+```toml
+[general]
+file_patterns = ["*.md", "*.txt"]
+consensus_threshold = 2
+timeout_seconds = 600
+canon_directories = ["canon"]
+max_rounds = 5
+min_severity = "major"
+propose_max_turns = 5
+review_max_turns = 2
+
+[agents.scientific_rigor]
+enabled = true
+model = "claude-sonnet-4-6"
+review_model = "claude-haiku-4-5-20251001"
+allowed_tools = ["WebSearch", "WebFetch"]
+
+[agents.canon_continuity]
+enabled = true
+model = "claude-sonnet-4-6"
+review_model = "claude-haiku-4-5-20251001"
+
+[agents.sociopolitical]
+enabled = true
+model = "claude-sonnet-4-6"
+review_model = "claude-haiku-4-5-20251001"
+allowed_tools = ["WebSearch", "WebFetch"]
+```
 
 ## CLI Reference
 
 ```
-multi-agent [--repo PATH] review              Review staged files (same as pre-commit hook)
-multi-agent [--repo PATH] review-files FILES  Review existing files on disk
-multi-agent [--repo PATH] install-hook        Install the git pre-commit hook
-multi-agent [--repo PATH] uninstall-hook      Remove the git pre-commit hook
-multi-agent check-config                      Show current configuration
+multi-agent [--repo PATH] review [--dry-run] [--max-rounds N]     Review staged files
+multi-agent [--repo PATH] review-files FILES [--dry-run] [--max-rounds N]  Review files on disk
+multi-agent [--repo PATH] install-hook                             Install git pre-commit hook
+multi-agent [--repo PATH] uninstall-hook                           Remove git pre-commit hook
+multi-agent [--repo PATH] check-config                             Show current configuration
 ```
 
-`--repo PATH` targets a different git repository (defaults to current directory).
-`--config PATH` is accepted by `review`, `review-files`, and `check-config` to use a specific config file.
+- `--repo PATH` — target a different git repository (defaults to current directory)
+- `--config PATH` — use a specific config file
+- `--dry-run` — show proposed changes without applying
+- `--max-rounds N` — override the configured max iteration rounds
 
 ## Project Structure
 
 ```
 multi-agent/
-├── multi_agent.toml          # Configuration
-├── canon/                    # Your fiction files go here
-│   ├── chapter-01.md
-│   ├── chapter-02.md
-│   └── ...
+├── multi_agent.example.toml  # Example config (copy to your fiction repo)
 └── src/multi_agent/
-    ├── agents.py             # Agent system prompts and definitions
-    ├── consensus.py          # Parallel execution and vote tallying
-    ├── context.py            # Git diff extraction and canon loading
+    ├── agents.py             # Agent system prompts, JSON schemas, prompt modes
+    ├── consensus.py          # Propose-review-iterate loop and vote tallying
+    ├── context.py            # Git integration, prompt builders, edit application
     ├── cli.py                # CLI commands
-    ├── output.py             # Terminal output formatting
+    ├── output.py             # Rich terminal output formatting
     ├── hook.py               # Git hook installer
     └── config.py             # TOML config loading
 ```

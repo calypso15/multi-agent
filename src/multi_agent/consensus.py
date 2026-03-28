@@ -760,7 +760,10 @@ async def run_propose_phase(
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
     """Run all enabled agents in propose mode (parallel)."""
-    propose_prompt = build_propose_prompt(file_contents, canon, staged_diff)
+    propose_prompt = build_propose_prompt(
+        file_contents, canon, staged_diff,
+        min_severity=config.general.min_severity,
+    )
 
     proposals: list[AgentProposal] = []
 
@@ -774,6 +777,8 @@ async def run_propose_phase(
             )
             cli_args = build_cli_args(
                 name, system_prompt, agent_cfg.model, repo_root,
+                max_turns=config.general.propose_max_turns,
+                allowed_tools=agent_cfg.allowed_tools or None,
             )
             tasks[name] = tg.create_task(
                 _run_single_proposer(
@@ -812,8 +817,10 @@ async def run_review_phase(
             system_prompt = build_agent_system_prompt(
                 name, "review", agent_cfg.system_prompt_override,
             )
+            model = agent_cfg.review_model or agent_cfg.model
             cli_args = build_cli_args(
-                name, system_prompt, agent_cfg.model, repo_root,
+                name, system_prompt, model, repo_root,
+                max_turns=config.general.review_max_turns,
             )
             tasks[name] = tg.create_task(
                 _run_single_reviewer(

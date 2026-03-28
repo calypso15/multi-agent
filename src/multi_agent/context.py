@@ -158,8 +158,7 @@ def count_uncommitted_canon(
 _REVIEW_INSTRUCTIONS = (
     "\n# YOUR TASK\n"
     "Review the content above according to your specialty. "
-    "You may use the Read, Glob, and Grep tools to explore the repository "
-    "for additional context if needed.\n\n"
+    "All canon and file contents are provided inline above.\n\n"
     "Return your structured verdict as JSON with:\n"
     '- "verdict": "APPROVE" or "REQUEST_CHANGES"\n'
     '- "summary": one-paragraph summary of your review\n'
@@ -227,8 +226,8 @@ def build_file_review_prompt(
         other_canon = sorted(set(canon_files) - set(target_files))
         if other_canon:
             parts.append("# EXISTING CANON\n")
-            parts.append("These files form the established universe. Use Read, "
-                          "Glob, and Grep to cross-reference as needed:\n\n")
+            parts.append("These files form the established universe "
+                          "for cross-reference:\n\n")
             for path in other_canon:
                 parts.append(f"- {path}\n")
     else:
@@ -236,9 +235,7 @@ def build_file_review_prompt(
         parts.append("No prior canon exists yet. Focus on internal consistency.\n")
 
     parts.append("\n# FILES TO REVIEW\n")
-    parts.append("Review the following files according to your specialty. "
-                  "Use the Read tool to read each file, and Grep/Glob to "
-                  "search the repository for cross-references.\n\n")
+    parts.append("Review the following files according to your specialty.\n\n")
     for path in sorted(target_files):
         parts.append(f"- {path}\n")
 
@@ -248,19 +245,34 @@ def build_file_review_prompt(
 
 # --- Propose / Review prompt builders ---
 
-_PROPOSE_INSTRUCTIONS = (
-    "\n# YOUR TASK\n"
-    "Review the content above from your specialty perspective and propose "
-    "concrete edits. Use the Read, Glob, and Grep tools to explore the "
-    "repository for additional context if needed.\n\n"
-    "Return your response as JSON.\n"
-)
+_SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
+
+
+def _propose_instructions(min_severity: str) -> str:
+    """Build propose instructions with severity threshold."""
+    idx = _SEVERITY_ORDER.index(min_severity) if min_severity in _SEVERITY_ORDER else 2
+    allowed = _SEVERITY_ORDER[:idx + 1]
+    severity_note = ""
+    if min_severity != "suggestion":
+        severity_note = (
+            f"\nIMPORTANT: Only propose edits for issues that are "
+            f"{' or '.join(allowed)} severity. "
+            f"Do NOT propose edits for purely stylistic or cosmetic issues"
+            f"{' or minor concerns' if min_severity in ('critical', 'major') else ''}.\n"
+        )
+    return (
+        "\n# YOUR TASK\n"
+        "Review the content above from your specialty perspective and propose "
+        "concrete edits. All canon and file contents are provided inline.\n"
+        + severity_note
+        + "\nReturn your response as JSON.\n"
+    )
 
 _REVIEW_ROUND_INSTRUCTIONS = (
     "\n# YOUR TASK\n"
     "Review ALL proposals above from your specialty perspective. For each edit, "
     "decide whether it is acceptable or needs modification.\n\n"
-    "You may use the Read, Glob, and Grep tools to verify facts.\n\n"
+    "All canon and file contents are provided inline above.\n\n"
     "Return your response as JSON.\n"
 )
 
@@ -269,6 +281,7 @@ def build_propose_prompt(
     file_contents: dict[str, str],
     canon: dict[str, str],
     staged_diff: str | None = None,
+    min_severity: str = "minor",
 ) -> str:
     """Assemble the prompt for the propose phase."""
     parts: list[str] = [_canon_section(canon)]
@@ -282,7 +295,7 @@ def build_propose_prompt(
         parts.append("\n# DIFF (changes being made)\n")
         parts.append(f"```diff\n{staged_diff}\n```\n")
 
-    parts.append(_PROPOSE_INSTRUCTIONS)
+    parts.append(_propose_instructions(min_severity))
     return "".join(parts)
 
 
