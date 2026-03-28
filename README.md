@@ -60,24 +60,37 @@ python -m multi_agent --repo ~/git/my-novel check-config
 
 ## Usage
 
-### Reviewing existing files
+### Reviewing files
 
 ```bash
 # Review specific files
-python -m multi_agent --repo ~/git/my-novel review-files canon/chapter-01.md
+python -m multi_agent --repo ~/git/my-novel review canon/chapter-01.md
 
 # Review a directory
-python -m multi_agent --repo ~/git/my-novel review-files canon/
+python -m multi_agent --repo ~/git/my-novel review canon/
 
 # Dry run — show proposed changes without applying
-python -m multi_agent --repo ~/git/my-novel review-files --dry-run canon/chapter-01.md
+python -m multi_agent --repo ~/git/my-novel review --dry-run canon/chapter-01.md
+
+# Review staged files (same as pre-commit hook)
+python -m multi_agent --repo ~/git/my-novel review
 ```
 
-### Reviewing staged changes
+### Expanding and contracting
 
 ```bash
-# Run the same review the pre-commit hook would
-python -m multi_agent --repo ~/git/my-novel review
+# Expand a file with richer detail
+python -m multi_agent --repo ~/git/my-novel expand canon/chapter-03.md
+
+# Tighten prose and cut filler
+python -m multi_agent --repo ~/git/my-novel contract canon/chapter-03.md
+
+# These are shortcuts for:
+python -m multi_agent --repo ~/git/my-novel review --task expand canon/chapter-03.md
+python -m multi_agent --repo ~/git/my-novel review --task contract canon/chapter-03.md
+
+# Custom tasks defined in multi_agent.toml
+python -m multi_agent --repo ~/git/my-novel review --task deepen-characters canon/chapter-03.md
 ```
 
 ### Pre-commit hook
@@ -100,7 +113,7 @@ python -m multi_agent --repo ~/git/my-novel uninstall-hook
 ```
 ╭─ Multi-Agent Fiction Review ─────────────────────────────────╮
 │  Reviewing 1 file(s): canon/chapter-03.md                    │
-│  Canon context: 4 files (23 KB)                              │
+│  Canon context: 4 file(s) (23 KB)                            │
 ╰──────────────────────────────────────────────────────────────╯
   Scientific Rigor: proposing
   Canon Continuity: proposing
@@ -109,27 +122,30 @@ python -m multi_agent --repo ~/git/my-novel uninstall-hook
   Canon Continuity: done — 2 edit(s)
   Sociopolitical: done — 0 edit(s)
 
-╭─ Propose Phase Complete ─────────────────────────────────────╮
-╰──────────────────────────────────────────────────────────────╯
-  Scientific Rigor: reviewing (round 1)
-  Canon Continuity: reviewing (round 1)
-  Sociopolitical: reviewing (round 1)
+──────────────────── Propose Phase ────────────────────────────
+  Scientific Rigor    1 edit(s) (canon/chapter-03.md)     8.2s
+  Canon Continuity    2 edit(s) (canon/chapter-03.md)    12.1s
+  Sociopolitical      no edits                            9.7s
 
-╭─ Review Round 1  (3/3 approved, need 2) ─────────────────────╮
-╰──────────────────────────────────────────────────────────────╯
+  3 total edit(s) proposed
+
+── Review Round 1  3/3 approved (need 2) ──────────────────────
+  Scientific Rigor    APPROVED ALL                        2.1s
+  Canon Continuity    APPROVED ALL                        1.8s
+  Sociopolitical      APPROVED ALL                        2.3s
 
 ╭─ CONSENSUS ──────────────────────────────────────────────────╮
 │  Consensus reached (3/3). All agents approve the proposed    │
 │  changes.                                                    │
 ╰──────────────────────────────────────────────────────────────╯
 
-╭─ Proposed Changes ───────────────────────────────────────────╮
+──────────────────── Proposed Changes ─────────────────────────
+
 --- a/canon/chapter-03.md
 +++ b/canon/chapter-03.md
 @@ -12,7 +12,7 @@
 -The ship accelerated to 3c using conventional thrusters.
 +The ship accelerated to 0.3c using conventional thrusters.
-╰──────────────────────────────────────────────────────────────╯
 
 ╭─ Usage ──────────────────────────────────────────────────────╮
 │  Input tokens              45,230                             │
@@ -172,6 +188,24 @@ Each agent under `[agents.<name>]` supports:
 | `allowed_tools` | `[]` | Tools available during the propose phase (e.g., `["WebSearch", "WebFetch"]`) |
 | `system_prompt_override` | — | Replace the built-in system prompt entirely |
 
+### Custom tasks
+
+Define reusable tasks in `multi_agent.toml` under `[tasks.<name>]`:
+
+```toml
+[tasks.deepen-characters]
+prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive."
+
+[tasks.worldbuild]
+prompt = "Enrich world-building details: sensory descriptions, environmental atmosphere, and cultural texture."
+```
+
+Use with `--task`:
+
+```bash
+python -m multi_agent review --task deepen-characters canon/chapter-03.md
+```
+
 ### Example config
 
 ```toml
@@ -201,20 +235,28 @@ enabled = true
 model = "claude-sonnet-4-6"
 review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
+
+[tasks.deepen-characters]
+prompt = "Focus on deepening character voices and making dialogue more distinctive."
 ```
 
 ## CLI Reference
 
 ```
-multi-agent [--repo PATH] review [--dry-run] [--max-rounds N]     Review staged files
-multi-agent [--repo PATH] review-files FILES [--dry-run] [--max-rounds N]  Review files on disk
-multi-agent [--repo PATH] install-hook                             Install git pre-commit hook
-multi-agent [--repo PATH] uninstall-hook                           Remove git pre-commit hook
-multi-agent [--repo PATH] check-config                             Show current configuration
+multi-agent [--repo PATH] review [FILES] [--task NAME] [--dry-run] [--max-rounds N]
+multi-agent [--repo PATH] expand FILES [--dry-run] [--max-rounds N]
+multi-agent [--repo PATH] contract FILES [--dry-run] [--max-rounds N]
+multi-agent [--repo PATH] install-hook
+multi-agent [--repo PATH] uninstall-hook
+multi-agent [--repo PATH] check-config
 ```
 
+- `review` — review files on disk, or staged files when no FILES given
+- `expand` — shortcut for `review --task expand`
+- `contract` — shortcut for `review --task contract`
 - `--repo PATH` — target a different git repository (defaults to current directory)
 - `--config PATH` — use a specific config file
+- `--task NAME` — task mode: `expand`, `contract`, or a custom task from config
 - `--dry-run` — show proposed changes without applying
 - `--max-rounds N` — override the configured max iteration rounds
 

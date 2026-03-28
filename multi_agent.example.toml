@@ -55,3 +55,12 @@ enabled = true
 model = "claude-sonnet-4-6"
 # review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
+
+# Custom tasks (used with --task flag). Built-in tasks: expand, contract
+# Usage: python -m multi_agent review-files --task deepen-characters canon/chapter-03.md
+
+[tasks.deepen-characters]
+prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive and memorable."
+
+[tasks.worldbuild]
+prompt = "Enrich world-building details: sensory descriptions, environmental atmosphere, cultural texture, and background activity that makes settings feel lived-in."

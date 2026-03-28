@@ -30,6 +30,11 @@ class GeneralConfig:
 
 
 @dataclass
+class TaskConfig:
+    prompt: str = ""
+
+
+@dataclass
 class MultiAgentConfig:
     general: GeneralConfig = field(default_factory=GeneralConfig)
     agents: dict[str, AgentConfig] = field(default_factory=lambda: {
@@ -37,6 +42,7 @@ class MultiAgentConfig:
         "canon_continuity": AgentConfig(),
         "sociopolitical": AgentConfig(),
     })
+    tasks: dict[str, TaskConfig] = field(default_factory=dict)
 
 
 def _find_config_file(start: Path) -> Path | None:
@@ -94,6 +100,12 @@ def load_config(
                 allowed_tools=agent_raw.get("allowed_tools", []),
             )
             config.agents[name] = agent_cfg
+
+    if "tasks" in raw:
+        for name, task_raw in raw["tasks"].items():
+            config.tasks[name] = TaskConfig(
+                prompt=task_raw.get("prompt", ""),
+            )
 
     enabled_count = sum(1 for a in config.agents.values() if a.enabled)
     if config.general.consensus_threshold > enabled_count:

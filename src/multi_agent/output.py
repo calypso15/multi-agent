@@ -6,6 +6,7 @@ import sys
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -16,6 +17,7 @@ from multi_agent.consensus import (
     AgentReview,
     AgentReviewResponse,
     ConsensusResult,
+    Dissent,
     IterationResult,
     TokenUsage,
 )
@@ -28,10 +30,12 @@ def print_header(
     canon_count: int,
     canon_size_kb: float,
     uncommitted_canon: int = 0,
+    task: str | None = None,
 ) -> None:
     """Print the review header showing what's being reviewed."""
     file_list = ", ".join(files)
-    lines = [f"Reviewing {len(files)} file(s): {file_list}"]
+    task_label = f"  [bold cyan]Task: {task}[/bold cyan]" if task else ""
+    lines = [f"Reviewing {len(files)} file(s): {file_list}{task_label}"]
     if canon_count > 0:
         canon_line = f"Canon context: {canon_count} file(s) ({canon_size_kb:.0f} KB)"
         if uncommitted_canon > 0:
@@ -159,14 +163,32 @@ def print_error(message: str) -> None:
 # --- Iteration loop output ---
 
 
+def _agent_table(rows: list[tuple[str, Text, float]]) -> Table:
+    """Build a compact table of agent results."""
+    table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 2),
+        pad_edge=False,
+    )
+    table.add_column("Agent", min_width=20)
+    table.add_column("Status")
+    table.add_column("Time", justify="right", style="dim")
+
+    for name, status, duration in rows:
+        table.add_row(name, status, f"{duration:.1f}s")
+
+    return table
+
+
 def print_proposals_summary(proposals: list[AgentProposal]) -> None:
     """Print a summary of what each agent proposed."""
     console.print()
-    console.print(Panel("Propose Phase Complete", border_style="blue"))
+    console.print(Rule("[bold magenta]Propose Phase[/bold magenta]", style="magenta"))
 
+    rows = []
     for proposal in proposals:
         display = AGENT_DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
-        name_text = f"  {display:<22}"
 
         if proposal.error:
             status = Text("ERROR", style="bold red")
@@ -174,17 +196,17 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
             status = Text("no edits", style="dim")
         else:
             files = sorted({e.file for e in proposal.edits})
-            status = Text(
-                f"{len(proposal.edits)} edit(s) ({', '.join(files)})",
-                style="bold cyan",
-            )
+            status = Text(f"{len(proposal.edits)} edit(s) ", style="bold cyan")
+            status.append(f"({', '.join(files)})", style="dim")
 
-        time_text = f"  {proposal.duration_seconds:.1f}s"
+        rows.append((display, status, proposal.duration_seconds))
 
-        line = Text(name_text)
-        line.append(status)
-        line.append(time_text, style="dim")
-        console.print(line)
+    console.print(_agent_table(rows))
+
+    total_edits = sum(len(p.edits) for p in proposals)
+    console.print(
+        f"\n  [dim]{total_edits} total edit(s) proposed[/dim]"
+    )
 
 
 def print_review_round(
@@ -193,35 +215,51 @@ def print_review_round(
     consensus_threshold: int,
 ) -> None:
     """Print the results of a review round."""
-    console.print()
     approvals = sum(1 for r in reviews if r.all_approved and r.error is None)
     total = len(reviews)
-    console.print(Panel(
-        f"Review Round {round_number + 1}  ({approvals}/{total} approved, "
-        f"need {consensus_threshold})",
-        border_style="blue",
+    reached = approvals >= consensus_threshold
+
+    color = "green" if reached else "yellow"
+    label = f"Review Round {round_number + 1}"
+    status = f"{approvals}/{total} approved (need {consensus_threshold})"
+
+    console.print()
+    console.print(Rule(
+        f"[bold {color}]{label}[/bold {color}]  [dim]{status}[/dim]",
+        style=color,
     ))
 
+    rows = []
     for review in reviews:
         display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
-        name_text = f"  {display:<22}"
 
         if review.error:
-            status = Text("ERROR", style="bold red")
+            status_text = Text("ERROR", style="bold red")
         elif review.all_approved:
-            status = Text("APPROVED ALL", style="bold green")
+            status_text = Text("APPROVED ALL", style="bold green")
         else:
             mod_count = sum(
                 1 for r in review.proposal_reviews if r.verdict == "MODIFY"
             )
-            status = Text(f"MODIFIED {mod_count}", style="bold yellow")
+            status_text = Text(f"MODIFIED {mod_count}", style="bold yellow")
 
-        time_text = f"  {review.duration_seconds:.1f}s"
+        rows.append((display, status_text, review.duration_seconds))
 
-        line = Text(name_text)
-        line.append(status)
-        line.append(time_text, style="dim")
-        console.print(line)
+    console.print(_agent_table(rows))
+
+    # Show modification details when not all approved
+    for review in reviews:
+        if review.all_approved or review.error or not review.proposal_reviews:
+            continue
+        display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
+        mods = [r for r in review.proposal_reviews if r.verdict == "MODIFY"]
+        if mods:
+            console.print(f"\n  [dim]{display} modifications:[/dim]")
+            for mod in mods:
+                console.print(
+                    f"    [yellow]edit {mod.edit_index}[/yellow] "
+                    f"from {mod.original_agent}: {mod.rationale}"
+                )
 
 
 def print_final_diff(diff_text: str) -> None:
@@ -229,7 +267,8 @@ def print_final_diff(diff_text: str) -> None:
     if not diff_text.strip():
         return
     console.print()
-    console.print(Panel("Proposed Changes", border_style="cyan"))
+    console.print(Rule("[bold cyan]Proposed Changes[/bold cyan]", style="cyan"))
+    console.print()
     syntax = Syntax(diff_text, "diff", theme="monokai", line_numbers=False)
     console.print(syntax)
 
@@ -282,6 +321,19 @@ def print_iteration_success(approvals: int, total: int) -> None:
         title="CONSENSUS",
         border_style="green",
     ))
+
+
+def print_dissents(dissents: list[Dissent]) -> None:
+    """Print dissenting opinions from agents that didn't approve."""
+    if not dissents:
+        return
+    console.print()
+    console.print(Rule("[bold red]Dissenting Opinions[/bold red]", style="red"))
+    for dissent in dissents:
+        display = AGENT_DISPLAY_NAMES.get(dissent.agent_name, dissent.agent_name)
+        console.print(f"\n  [bold]{display}:[/bold]")
+        console.print(f"  {dissent.opinion}")
+    console.print()
 
 
 def print_changes_applied(files: list[str]) -> None:

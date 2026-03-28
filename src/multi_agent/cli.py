@@ -14,6 +14,7 @@ from multi_agent.output import (
     console,
     print_changes_applied,
     print_confirmation_prompt,
+    print_dissents,
     print_error,
     print_final_diff,
     print_header,
@@ -46,6 +47,30 @@ def _resolve_repo(ctx: click.Context) -> Path:
     return find_git_root(start)
 
 
+BUILTIN_TASKS = {"expand", "contract"}
+
+
+def _resolve_task(task_name: str | None, config) -> tuple[str | None, str | None]:
+    """Resolve a task name to (mode, custom_prompt).
+
+    Returns (None, None) for default review mode.
+    Returns ("expand", None) or ("contract", None) for built-ins.
+    Returns ("custom", prompt) for config-defined tasks.
+    Raises click.BadParameter if task is unknown.
+    """
+    if task_name is None:
+        return None, None
+    if task_name in BUILTIN_TASKS:
+        return task_name, None
+    if task_name in config.tasks:
+        return "custom", config.tasks[task_name].prompt
+    available = sorted(BUILTIN_TASKS | set(config.tasks.keys()))
+    raise click.BadParameter(
+        f"Unknown task '{task_name}'. Available: {', '.join(available)}",
+        param_hint="'--task'",
+    )
+
+
 def _run_iteration_and_present(
     config,
     repo_root: Path,
@@ -56,28 +81,29 @@ def _run_iteration_and_present(
     uncommitted_canon: int,
     dry_run: bool,
     hook_mode: bool,
+    task: str | None = None,
+    custom_task_prompt: str | None = None,
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
     from multi_agent.consensus import run_iteration_loop
     from multi_agent.context import apply_edits, build_diff_preview
 
-    print_header(files_display, canon_count, canon_size_kb, uncommitted_canon)
+    def on_phase(event, *args):
+        if event == "propose_done":
+            print_proposals_summary(args[0])
+        elif event == "review_done":
+            print_review_round(args[0], args[1], args[2])
+        elif event == "dissents_done":
+            print_dissents(args[0])
+
+    print_header(files_display, canon_count, canon_size_kb, uncommitted_canon, task=task)
 
     result = asyncio.run(run_iteration_loop(
         config, str(repo_root), target_files=target_files,
+        task=task, custom_task_prompt=custom_task_prompt,
         on_progress=print_progress,
+        on_phase=on_phase,
     ))
-
-    # Show proposal summary
-    if result.proposals:
-        print_proposals_summary(result.proposals)
-
-    # Show review rounds
-    for rnd in result.rounds:
-        print_review_round(
-            rnd.round_number, rnd.reviews,
-            config.general.consensus_threshold,
-        )
 
     # No edits?
     if not result.final_edits:
@@ -130,7 +156,7 @@ def _run_iteration_and_present(
         # Non-interactive hook: don't apply, exit 1 so user can review
         console.print(
             "[yellow]Changes proposed but cannot confirm in non-interactive mode.[/yellow]\n"
-            "Run [bold]multi-agent review-files[/bold] to review and apply interactively."
+            "Run [bold]multi-agent review[/bold] to review and apply interactively."
         )
         return 1
 
@@ -149,7 +175,87 @@ def _run_iteration_and_present(
         return 1 if hook_mode else 0
 
 
+def _review_common(
+    ctx: click.Context,
+    files: tuple[str, ...],
+    config_path: str | None,
+    hook_mode: bool,
+    dry_run: bool,
+    max_rounds: int | None,
+    task_name: str | None,
+) -> None:
+    """Shared implementation for review, expand, and contract commands."""
+    try:
+        repo_root = _resolve_repo(ctx)
+    except Exception:
+        print_error("Not in a git repository.")
+        sys.exit(1)
+
+    config = load_config(
+        Path(config_path) if config_path else None,
+        search_from=repo_root,
+    )
+    if max_rounds is not None:
+        config.general.max_rounds = max_rounds
+
+    task, custom_task_prompt = _resolve_task(task_name, config)
+
+    from multi_agent.consensus import resolve_file_args
+    from multi_agent.context import (
+        count_uncommitted_canon,
+        get_staged_files,
+        load_canon,
+    )
+
+    # If files provided, review those files. Otherwise review staged files.
+    if files:
+        try:
+            resolved = resolve_file_args(list(files), repo_root, config)
+        except FileNotFoundError as exc:
+            print_error(str(exc))
+            sys.exit(1)
+        target_files: list[str] | None = resolved
+        files_display = resolved
+    else:
+        staged = get_staged_files(repo_root, config.general.file_patterns)
+        if not staged:
+            print_no_files()
+            sys.exit(0)
+        target_files = None  # signals: use staged files
+        files_display = [str(f) for f in staged]
+
+    canon = load_canon(
+        repo_root,
+        config.general.canon_directories,
+        config.general.file_patterns,
+        config.general.max_canon_size_kb,
+    )
+    canon_size_kb = sum(len(v.encode()) for v in canon.values()) / 1024
+    uncommitted = count_uncommitted_canon(
+        repo_root,
+        config.general.canon_directories,
+        config.general.file_patterns,
+        set(canon.keys()),
+    )
+
+    exit_code = _run_iteration_and_present(
+        config=config,
+        repo_root=repo_root,
+        target_files=target_files,
+        files_display=files_display,
+        canon_count=len(canon),
+        canon_size_kb=canon_size_kb,
+        uncommitted_canon=uncommitted,
+        dry_run=dry_run,
+        hook_mode=hook_mode,
+        task=task,
+        custom_task_prompt=custom_task_prompt,
+    )
+    sys.exit(exit_code)
+
+
 @main.command()
+@click.argument("files", nargs=-1)
 @click.option("--config", "config_path", type=click.Path(exists=True), default=None,
               help="Path to multi_agent.toml config file.")
 @click.option("--hook-mode", is_flag=True, hidden=True,
@@ -158,68 +264,34 @@ def _run_iteration_and_present(
               help="Show proposed changes without applying.")
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
+@click.option("--task", "task_name", default=None,
+              help="Task mode: expand, contract, or a custom task from config.")
 @click.pass_context
 def review(
     ctx: click.Context,
+    files: tuple[str, ...],
     config_path: str | None,
     hook_mode: bool,
     dry_run: bool,
     max_rounds: int | None,
+    task_name: str | None,
 ) -> None:
-    """Review staged files and propose changes via consensus."""
-    try:
-        repo_root = _resolve_repo(ctx)
-    except Exception:
-        print_error("Not in a git repository.")
-        sys.exit(1)
+    """Review files and propose changes via consensus.
 
-    config = load_config(
-        Path(config_path) if config_path else None,
-        search_from=repo_root,
-    )
-    if max_rounds is not None:
-        config.general.max_rounds = max_rounds
+    When FILES are given, reviews those files on disk. When no FILES are given,
+    reviews staged files (used by the pre-commit hook).
 
-    from multi_agent.context import (
-        count_uncommitted_canon,
-        get_staged_files,
-        load_canon,
-    )
-
-    staged = get_staged_files(repo_root, config.general.file_patterns)
-    if not staged:
-        print_no_files()
-        sys.exit(0)
-
-    canon = load_canon(
-        repo_root,
-        config.general.canon_directories,
-        config.general.file_patterns,
-        config.general.max_canon_size_kb,
-    )
-    canon_size_kb = sum(len(v.encode()) for v in canon.values()) / 1024
-    uncommitted = count_uncommitted_canon(
-        repo_root,
-        config.general.canon_directories,
-        config.general.file_patterns,
-        set(canon.keys()),
-    )
-
-    exit_code = _run_iteration_and_present(
-        config=config,
-        repo_root=repo_root,
-        target_files=None,  # use staged files
-        files_display=[str(f) for f in staged],
-        canon_count=len(canon),
-        canon_size_kb=canon_size_kb,
-        uncommitted_canon=uncommitted,
-        dry_run=dry_run,
-        hook_mode=hook_mode,
-    )
-    sys.exit(exit_code)
+    \b
+    Examples:
+        multi-agent review canon/chapter-01.md
+        multi-agent review --task expand canon/chapter-03.md
+        multi-agent review canon/
+        multi-agent review                  # reviews staged files
+    """
+    _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name)
 
 
-@main.command("review-files")
+@main.command()
 @click.argument("files", nargs=-1, required=True)
 @click.option("--config", "config_path", type=click.Path(exists=True), default=None,
               help="Path to multi_agent.toml config file.")
@@ -228,72 +300,51 @@ def review(
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
 @click.pass_context
-def review_files(
+def expand(
     ctx: click.Context,
     files: tuple[str, ...],
     config_path: str | None,
     dry_run: bool,
     max_rounds: int | None,
 ) -> None:
-    """Review existing files and propose changes via consensus.
+    """Expand files with richer detail via consensus.
 
-    Paths are resolved relative to the repo root (or --repo). You can pass
-    files or directories (directories are searched for matching file patterns).
+    Shortcut for: review --task expand FILES
 
     \b
     Examples:
-        python -m multi_agent review-files canon/chapter-01.md
-        python -m multi_agent review-files canon/
-        python -m multi_agent --repo ~/git/my-novel review-files docs/
+        multi-agent expand canon/chapter-03.md
+        multi-agent expand canon/
     """
-    try:
-        repo_root = _resolve_repo(ctx)
-    except Exception:
-        print_error("Not in a git repository.")
-        sys.exit(1)
+    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "expand")
 
-    config = load_config(
-        Path(config_path) if config_path else None,
-        search_from=repo_root,
-    )
-    if max_rounds is not None:
-        config.general.max_rounds = max_rounds
 
-    from multi_agent.consensus import resolve_file_args
-    from multi_agent.context import count_uncommitted_canon, load_canon
+@main.command()
+@click.argument("files", nargs=-1, required=True)
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+              help="Path to multi_agent.toml config file.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show proposed changes without applying.")
+@click.option("--max-rounds", type=int, default=None,
+              help="Override max iteration rounds.")
+@click.pass_context
+def contract(
+    ctx: click.Context,
+    files: tuple[str, ...],
+    config_path: str | None,
+    dry_run: bool,
+    max_rounds: int | None,
+) -> None:
+    """Tighten prose and cut filler via consensus.
 
-    try:
-        resolved = resolve_file_args(list(files), repo_root, config)
-    except FileNotFoundError as exc:
-        print_error(str(exc))
-        sys.exit(1)
+    Shortcut for: review --task contract FILES
 
-    canon = load_canon(
-        repo_root,
-        config.general.canon_directories,
-        config.general.file_patterns,
-        config.general.max_canon_size_kb,
-    )
-    canon_size_kb = sum(len(v.encode()) for v in canon.values()) / 1024
-    uncommitted = count_uncommitted_canon(
-        repo_root,
-        config.general.canon_directories,
-        config.general.file_patterns,
-        set(canon.keys()),
-    )
-
-    exit_code = _run_iteration_and_present(
-        config=config,
-        repo_root=repo_root,
-        target_files=resolved,
-        files_display=resolved,
-        canon_count=len(canon),
-        canon_size_kb=canon_size_kb,
-        uncommitted_canon=uncommitted,
-        dry_run=dry_run,
-        hook_mode=False,
-    )
-    sys.exit(exit_code)
+    \b
+    Examples:
+        multi-agent contract canon/chapter-03.md
+        multi-agent contract canon/
+    """
+    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "contract")
 
 
 @main.command("install-hook")
@@ -363,3 +414,12 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
         review_model = agent.review_model or model
         tools = ", ".join(agent.allowed_tools) if agent.allowed_tools else "none"
         console.print(f"  {name}: {status} (propose: {model}, review: {review_model}, tools: {tools})")
+
+    if config.tasks:
+        console.print()
+        console.print("[bold]Custom Tasks:[/bold]")
+        for name, task_cfg in config.tasks.items():
+            prompt_preview = task_cfg.prompt[:60] + "..." if len(task_cfg.prompt) > 60 else task_cfg.prompt
+            console.print(f"  {name}: {prompt_preview}")
+    console.print()
+    console.print("[dim]Built-in tasks: expand, contract[/dim]")

@@ -248,8 +248,27 @@ def build_file_review_prompt(
 _SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
 
 
-def _propose_instructions(min_severity: str) -> str:
-    """Build propose instructions with severity threshold."""
+def _propose_instructions(min_severity: str, task: str | None = None) -> str:
+    """Build propose instructions with severity threshold and optional task."""
+    if task in ("expand", "contract"):
+        # For expand/contract, severity filtering doesn't apply — the
+        # system prompt already describes the goal.
+        return (
+            "\n# YOUR TASK\n"
+            "Apply the task described in your system prompt to the content above. "
+            "All canon and file contents are provided inline.\n\n"
+            "Return your response as JSON.\n"
+        )
+
+    if task == "custom":
+        return (
+            "\n# YOUR TASK\n"
+            "Apply the task described in your system prompt to the content above. "
+            "All canon and file contents are provided inline.\n\n"
+            "Return your response as JSON.\n"
+        )
+
+    # Default: review for issues
     idx = _SEVERITY_ORDER.index(min_severity) if min_severity in _SEVERITY_ORDER else 2
     allowed = _SEVERITY_ORDER[:idx + 1]
     severity_note = ""
@@ -282,6 +301,7 @@ def build_propose_prompt(
     canon: dict[str, str],
     staged_diff: str | None = None,
     min_severity: str = "minor",
+    task: str | None = None,
 ) -> str:
     """Assemble the prompt for the propose phase."""
     parts: list[str] = [_canon_section(canon)]
@@ -295,7 +315,7 @@ def build_propose_prompt(
         parts.append("\n# DIFF (changes being made)\n")
         parts.append(f"```diff\n{staged_diff}\n```\n")
 
-    parts.append(_propose_instructions(min_severity))
+    parts.append(_propose_instructions(min_severity, task))
     return "".join(parts)
 
 

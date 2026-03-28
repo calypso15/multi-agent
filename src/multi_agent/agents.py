@@ -264,22 +264,15 @@ REVIEW_RESPONSE_FORMAT = json.dumps({
 })
 
 
-PROPOSE_MODE_SUFFIX = """\
+_PROPOSE_JSON_INSTRUCTIONS = """\
 
-
-# YOUR TASK MODE: PROPOSE EDITS
-
-You are in PROPOSE mode. Review the submitted content from your specialty \
-perspective and propose CONCRETE edits to improve it.
-
-For each issue you find, propose an exact text replacement:
+For each change, propose an exact text replacement:
 - "original_text" must be an EXACT verbatim substring copied from the file \
 (whitespace, punctuation, and all). It must appear exactly once in the file.
 - "replacement_text" is your proposed replacement for that text.
-- Keep edits minimal — change only what is necessary to fix the issue.
 - Explain WHY from your domain expertise in "rationale".
 
-If the content has no issues from your perspective, return an empty edits array.
+If you have no changes to propose, return an empty edits array.
 
 Return your response as JSON matching this schema:
 - "summary": one-paragraph summary of your proposed changes
@@ -289,6 +282,40 @@ Return your response as JSON matching this schema:
   - "replacement_text": your proposed replacement
   - "rationale": why this edit is needed from your specialty
 """
+
+PROPOSE_MODE_SUFFIX = """\
+
+
+# YOUR TASK MODE: PROPOSE EDITS
+
+You are in PROPOSE mode. Review the submitted content from your specialty \
+perspective and propose CONCRETE edits to improve it. \
+Keep edits minimal — change only what is necessary to fix the issue.
+""" + _PROPOSE_JSON_INSTRUCTIONS
+
+EXPAND_MODE_SUFFIX = """\
+
+
+# YOUR TASK MODE: EXPAND CONTENT
+
+You are in EXPAND mode. Your goal is to enrich the submitted content from \
+your specialty perspective. Add vivid descriptions, flesh out thin scenes, \
+deepen character moments, and develop world-building elements. Preserve the \
+existing narrative arc and voice. Propose concrete edits that ADD detail \
+where the content would benefit from it.
+""" + _PROPOSE_JSON_INSTRUCTIONS
+
+CONTRACT_MODE_SUFFIX = """\
+
+
+# YOUR TASK MODE: CONTRACT CONTENT
+
+You are in CONTRACT mode. Your goal is to tighten the prose from your \
+specialty perspective. Remove redundant words and phrases, consolidate \
+repetitive passages, cut filler, and streamline sentences. Preserve all \
+meaning and narrative beats with fewer words. Propose concrete edits that \
+make the writing more concise.
+""" + _PROPOSE_JSON_INSTRUCTIONS
 
 REVIEW_MODE_SUFFIX = """\
 
@@ -325,17 +352,73 @@ Return your response as JSON matching this schema:
 """
 
 
+DISSENT_MODE_SUFFIX = """\
+
+
+# YOUR TASK MODE: DISSENTING OPINION
+
+Consensus was NOT reached. The proposed changes are being presented to the \
+user despite your objections. You have one chance to provide a brief \
+dissenting opinion.
+
+Be concise (2-4 sentences). State your most important concern and why \
+the user should be cautious about accepting the proposed changes. Focus on \
+the single most critical issue from your specialty perspective.
+
+Return your response as a plain text string (NOT JSON). Just write your opinion.
+"""
+
+DISSENT_OUTPUT_FORMAT = json.dumps({
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "opinion": {
+                "type": "string",
+                "description": "Brief dissenting opinion (2-4 sentences).",
+            },
+        },
+        "required": ["opinion"],
+    },
+})
+
+_MODE_SUFFIXES: dict[str, str] = {
+    "propose": PROPOSE_MODE_SUFFIX,
+    "expand": EXPAND_MODE_SUFFIX,
+    "contract": CONTRACT_MODE_SUFFIX,
+    "review": REVIEW_MODE_SUFFIX,
+    "dissent": DISSENT_MODE_SUFFIX,
+}
+
+
+def build_custom_mode_suffix(task_prompt: str) -> str:
+    """Build a propose-mode suffix from a custom task prompt."""
+    return f"""\
+
+
+# YOUR TASK MODE: CUSTOM TASK
+
+{task_prompt}
+
+Propose concrete edits from your specialty perspective.
+""" + _PROPOSE_JSON_INSTRUCTIONS
+
+
 def build_agent_system_prompt(
     agent_name: str,
     mode: str,
     config_override: str | None = None,
+    custom_task_prompt: str | None = None,
 ) -> str:
     """Build a complete system prompt for an agent in the given mode.
 
-    mode: "propose" or "review"
+    mode: "propose", "expand", "contract", "custom", or "review"
     """
     base = config_override or AGENT_PROMPTS[agent_name]
-    suffix = PROPOSE_MODE_SUFFIX if mode == "propose" else REVIEW_MODE_SUFFIX
+    if mode == "custom" and custom_task_prompt:
+        suffix = build_custom_mode_suffix(custom_task_prompt)
+    else:
+        suffix = _MODE_SUFFIXES.get(mode, PROPOSE_MODE_SUFFIX)
     return base + suffix
 
 

@@ -132,6 +132,14 @@ class IterationRound:
 
 
 @dataclass
+class Dissent:
+    agent_name: str
+    opinion: str
+    duration_seconds: float = 0.0
+    usage: TokenUsage = field(default_factory=TokenUsage)
+
+
+@dataclass
 class IterationResult:
     consensus_reached: bool
     final_edits: list[FileEdit]
@@ -140,6 +148,7 @@ class IterationResult:
     total_duration_seconds: float
     files_reviewed: list[str]
     total_usage: TokenUsage = field(default_factory=TokenUsage)
+    dissents: list[Dissent] = field(default_factory=list)
 
 
 def _parse_issues(raw_issues: list[dict[str, Any]]) -> list[ReviewIssue]:
@@ -757,13 +766,19 @@ async def run_propose_phase(
     canon: dict[str, str],
     staged_diff: str | None,
     repo_root: str,
+    task: str | None = None,
+    custom_task_prompt: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
     """Run all enabled agents in propose mode (parallel)."""
     propose_prompt = build_propose_prompt(
         file_contents, canon, staged_diff,
         min_severity=config.general.min_severity,
+        task=task,
     )
+
+    # Determine the agent mode for the system prompt
+    mode = task if task in ("expand", "contract", "custom") else "propose"
 
     proposals: list[AgentProposal] = []
 
@@ -773,7 +788,8 @@ async def run_propose_phase(
             if not agent_cfg.enabled:
                 continue
             system_prompt = build_agent_system_prompt(
-                name, "propose", agent_cfg.system_prompt_override,
+                name, mode, agent_cfg.system_prompt_override,
+                custom_task_prompt=custom_task_prompt,
             )
             cli_args = build_cli_args(
                 name, system_prompt, agent_cfg.model, repo_root,
@@ -787,8 +803,8 @@ async def run_propose_phase(
                 )
             )
 
-    for name, task in tasks.items():
-        proposals.append(task.result())
+    for name, task_obj in tasks.items():
+        proposals.append(task_obj.result())
 
     return proposals
 
@@ -835,16 +851,151 @@ async def run_review_phase(
     return reviews
 
 
+def _build_dissent_prompt(
+    proposals: list[AgentProposal],
+    file_contents: dict[str, str],
+) -> str:
+    """Build a prompt for dissenting agents to state their concerns."""
+    parts = ["# PROPOSED CHANGES (going to the user despite your objections)\n"]
+
+    for proposal in proposals:
+        if not proposal.edits:
+            continue
+        parts.append(f"\n## Edits from {proposal.agent_name}\n")
+        for i, edit in enumerate(proposal.edits):
+            parts.append(f"\n### Edit {i} — {edit.file}\n")
+            parts.append(f"**Replace:**\n```\n{edit.original_text}\n```\n")
+            parts.append(f"**With:**\n```\n{edit.replacement_text}\n```\n")
+
+    parts.append(
+        "\n# YOUR TASK\n"
+        "State your most important concern about these changes in 2-4 sentences. "
+        "Return your response as JSON with a single \"opinion\" field.\n"
+    )
+    return "".join(parts)
+
+
+async def _run_single_dissenter(
+    agent_name: str,
+    prompt: str,
+    cli_args: list[str],
+    repo_root: str,
+    timeout_seconds: int,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> Dissent:
+    """Run a single agent to collect a dissenting opinion."""
+    start = time.monotonic()
+
+    if on_progress:
+        on_progress(agent_name, "dissenting")
+
+    try:
+        proc = await asyncio.wait_for(
+            _spawn_claude(cli_args, prompt, repo_root),
+            timeout=timeout_seconds,
+        )
+
+        stdout = proc.stdout or ""
+        output = _extract_json(stdout)
+
+        usage = _extract_usage(output) if output else TokenUsage()
+
+        if output and "result" in output and "opinion" not in output:
+            inner = output["result"]
+            if isinstance(inner, str):
+                # The agent might return plain text in the result field
+                parsed = _extract_json(inner)
+                if parsed and "opinion" in parsed:
+                    output = parsed
+                else:
+                    # Treat the raw string as the opinion
+                    output = {"opinion": inner}
+            elif isinstance(inner, dict):
+                output = inner
+
+        opinion = ""
+        if output:
+            opinion = output.get("opinion", "")
+        if not opinion and stdout:
+            # Fall back to raw text
+            opinion = stdout.strip()[:500]
+
+        if on_progress:
+            on_progress(agent_name, "done — dissent recorded")
+
+        return Dissent(
+            agent_name=agent_name,
+            opinion=opinion,
+            duration_seconds=time.monotonic() - start,
+            usage=usage,
+        )
+
+    except (asyncio.TimeoutError, Exception):
+        return Dissent(
+            agent_name=agent_name,
+            opinion="",
+            duration_seconds=time.monotonic() - start,
+        )
+
+
+async def _collect_dissents(
+    config: MultiAgentConfig,
+    dissenting_agents: list[str],
+    proposals: list[AgentProposal],
+    file_contents: dict[str, str],
+    repo_root: str,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> list[Dissent]:
+    """Collect brief dissenting opinions from agents that didn't approve."""
+    prompt = _build_dissent_prompt(proposals, file_contents)
+
+    dissents: list[Dissent] = []
+
+    async with asyncio.TaskGroup() as tg:
+        tasks = {}
+        for name in dissenting_agents:
+            agent_cfg = config.agents.get(name)
+            if not agent_cfg or not agent_cfg.enabled:
+                continue
+            system_prompt = build_agent_system_prompt(name, "dissent")
+            model = agent_cfg.review_model or agent_cfg.model
+            cli_args = build_cli_args(
+                name, system_prompt, model, repo_root,
+                max_turns=1,
+            )
+            tasks[name] = tg.create_task(
+                _run_single_dissenter(
+                    name, prompt, cli_args, repo_root,
+                    config.general.timeout_seconds, on_progress,
+                )
+            )
+
+    for name, task_obj in tasks.items():
+        result = task_obj.result()
+        if result.opinion:
+            dissents.append(result)
+
+    return dissents
+
+
 async def run_iteration_loop(
     config: MultiAgentConfig,
     repo_root: str,
     target_files: list[str] | None = None,
+    task: str | None = None,
+    custom_task_prompt: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
+    on_phase: Callable | None = None,
 ) -> IterationResult:
     """Run the full propose-review-iterate loop.
 
     If target_files is None, reviews staged files. Otherwise reviews the
     specified files from the working tree.
+    task: "expand", "contract", "custom", or None (default review).
+    custom_task_prompt: prompt text for custom tasks.
+    on_phase: callback for phase transitions. Called with:
+      - ("propose_done", proposals)
+      - ("review_done", round_number, reviews, consensus_threshold)
     """
     root = Path(repo_root)
     start = time.monotonic()
@@ -885,10 +1036,15 @@ async def run_iteration_loop(
     total_usage = TokenUsage()
 
     proposals = await run_propose_phase(
-        config, file_contents, canon, staged_diff, repo_root, on_progress,
+        config, file_contents, canon, staged_diff, repo_root,
+        task=task, custom_task_prompt=custom_task_prompt,
+        on_progress=on_progress,
     )
     for p in proposals:
         total_usage += p.usage
+
+    if on_phase:
+        on_phase("propose_done", proposals)
 
     # 4. Validate and deduplicate
     for proposal in proposals:
@@ -935,6 +1091,10 @@ async def run_iteration_loop(
             consensus_reached=consensus_reached,
         ))
 
+        if on_phase:
+            on_phase("review_done", round_num, reviews,
+                     config.general.consensus_threshold)
+
         if consensus_reached:
             consensus = True
             break
@@ -952,6 +1112,25 @@ async def run_iteration_loop(
         final_edits.extend(p.edits)
     final_edits = deduplicate_edits(final_edits)
 
+    # 8. Collect dissenting opinions if consensus was not reached
+    dissents: list[Dissent] = []
+    if not consensus and rounds and final_edits:
+        last_reviews = rounds[-1].reviews
+        dissenting_agents = [
+            r.agent_name for r in last_reviews
+            if not r.all_approved and r.error is None
+        ]
+        if dissenting_agents:
+            dissents = await _collect_dissents(
+                config, dissenting_agents, current_proposals,
+                file_contents, repo_root, on_progress,
+            )
+            for d in dissents:
+                total_usage += d.usage
+
+            if on_phase:
+                on_phase("dissents_done", dissents)
+
     return IterationResult(
         consensus_reached=consensus,
         final_edits=final_edits,
@@ -960,4 +1139,5 @@ async def run_iteration_loop(
         total_duration_seconds=time.monotonic() - start,
         files_reviewed=files_reviewed,
         total_usage=total_usage,
+        dissents=dissents,
     )
