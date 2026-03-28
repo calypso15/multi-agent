@@ -1,0 +1,39 @@
+# Multi-Agent Fiction Review — Example Configuration
+# Copy this file to your fiction repository as "multi_agent.toml" and
+# adjust the values to match your project structure.
+
+[general]
+# Glob patterns for files the agents should review
+file_patterns = ["*.md", "*.txt"]
+
+# Number of agents that must approve for consensus (out of enabled agents)
+consensus_threshold = 2
+
+# Maximum time (seconds) each agent is allowed to run
+timeout_seconds = 600
+
+# Directories containing established canon files used as review context.
+# Agents cross-reference new content against these files.
+canon_directories = ["canon"]
+
+# Maximum total size (KB) of canon content loaded into agent context
+max_canon_size_kb = 500
+
+# Maximum propose-review iteration rounds before presenting best result
+max_rounds = 3
+
+# Each agent section can override model or provide a custom system prompt.
+# Disable an agent by setting enabled = false.
+
+[agents.scientific_rigor]
+enabled = true
+model = "claude-sonnet-4-6"
+# system_prompt_override = "Custom prompt text..."
+
+[agents.canon_continuity]
+enabled = true
+model = "claude-sonnet-4-6"
+
+[agents.sociopolitical]
+enabled = true
+model = "claude-sonnet-4-6"

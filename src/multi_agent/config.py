@@ -21,6 +21,7 @@ class GeneralConfig:
     timeout_seconds: int = 600
     canon_directories: list[str] = field(default_factory=lambda: ["canon"])
     max_canon_size_kb: int = 500
+    max_rounds: int = 3
 
 
 @dataclass
@@ -47,14 +48,17 @@ def _find_config_file(start: Path) -> Path | None:
     return None
 
 
-def load_config(path: Path | None = None) -> MultiAgentConfig:
+def load_config(
+    path: Path | None = None,
+    search_from: Path | None = None,
+) -> MultiAgentConfig:
     """Load configuration from a TOML file.
 
-    If no path is given, searches upward from cwd for multi_agent.toml.
-    Falls back to defaults if no file is found.
+    If no path is given, searches upward from search_from (or cwd) for
+    multi_agent.toml. Falls back to defaults if no file is found.
     """
     if path is None:
-        path = _find_config_file(Path.cwd())
+        path = _find_config_file(search_from or Path.cwd())
 
     if path is None:
         return MultiAgentConfig()
@@ -69,6 +73,7 @@ def load_config(path: Path | None = None) -> MultiAgentConfig:
         for fld in (
             "file_patterns", "consensus_threshold",
             "timeout_seconds", "canon_directories", "max_canon_size_kb",
+            "max_rounds",
         ):
             if fld in g:
                 setattr(config.general, fld, g[fld])
@@ -90,5 +95,7 @@ def load_config(path: Path | None = None) -> MultiAgentConfig:
         )
     if enabled_count < 2:
         raise ValueError("At least 2 agents must be enabled")
+    if config.general.max_rounds < 1:
+        raise ValueError("max_rounds must be at least 1")
 
     return config

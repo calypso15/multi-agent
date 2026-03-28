@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from multi_agent.consensus import AgentProposal, FileEdit
 
 
 def find_git_root(start: Path | None = None) -> Path:
@@ -130,6 +135,26 @@ def load_canon(
     return canon
 
 
+def count_uncommitted_canon(
+    repo_root: Path,
+    directories: list[str],
+    patterns: list[str],
+    committed_paths: set[str],
+) -> int:
+    """Count files on disk in canon directories that are not committed."""
+    count = 0
+    for d in directories:
+        dir_path = repo_root / d
+        if not dir_path.is_dir():
+            continue
+        for pattern in patterns:
+            for path in dir_path.rglob(pattern):
+                rel = str(path.relative_to(repo_root))
+                if rel not in committed_paths:
+                    count += 1
+    return count
+
+
 _REVIEW_INSTRUCTIONS = (
     "\n# YOUR TASK\n"
     "Review the content above according to your specialty. "
@@ -219,3 +244,134 @@ def build_file_review_prompt(
 
     parts.append(_REVIEW_INSTRUCTIONS)
     return "".join(parts)
+
+
+# --- Propose / Review prompt builders ---
+
+_PROPOSE_INSTRUCTIONS = (
+    "\n# YOUR TASK\n"
+    "Review the content above from your specialty perspective and propose "
+    "concrete edits. Use the Read, Glob, and Grep tools to explore the "
+    "repository for additional context if needed.\n\n"
+    "Return your response as JSON.\n"
+)
+
+_REVIEW_ROUND_INSTRUCTIONS = (
+    "\n# YOUR TASK\n"
+    "Review ALL proposals above from your specialty perspective. For each edit, "
+    "decide whether it is acceptable or needs modification.\n\n"
+    "You may use the Read, Glob, and Grep tools to verify facts.\n\n"
+    "Return your response as JSON.\n"
+)
+
+
+def build_propose_prompt(
+    file_contents: dict[str, str],
+    canon: dict[str, str],
+    staged_diff: str | None = None,
+) -> str:
+    """Assemble the prompt for the propose phase."""
+    parts: list[str] = [_canon_section(canon)]
+
+    parts.append("\n# FILES FOR REVIEW\n")
+    parts.append("These are the files to review and propose edits for.\n")
+    for path, content in sorted(file_contents.items()):
+        parts.append(f"\n## {path}\n```\n{content}\n```\n")
+
+    if staged_diff:
+        parts.append("\n# DIFF (changes being made)\n")
+        parts.append(f"```diff\n{staged_diff}\n```\n")
+
+    parts.append(_PROPOSE_INSTRUCTIONS)
+    return "".join(parts)
+
+
+def build_review_round_prompt(
+    proposals: list[AgentProposal],
+    file_contents: dict[str, str],
+    canon: dict[str, str],
+    round_number: int,
+) -> str:
+    """Assemble the prompt for a review round."""
+    from multi_agent.agents import AGENT_DISPLAY_NAMES
+
+    parts: list[str] = [_canon_section(canon)]
+
+    parts.append("\n# ORIGINAL FILE CONTENTS\n")
+    for path, content in sorted(file_contents.items()):
+        parts.append(f"\n## {path}\n```\n{content}\n```\n")
+
+    parts.append(f"\n# PROPOSALS TO REVIEW (Round {round_number + 1})\n")
+    for proposal in proposals:
+        if not proposal.edits:
+            continue
+        display = AGENT_DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
+        parts.append(f"\n## Proposals from {display} ({proposal.agent_name})\n")
+        parts.append(f"Summary: {proposal.summary}\n")
+        for i, edit in enumerate(proposal.edits):
+            parts.append(f"\n### Edit {i} — {edit.file}\n")
+            parts.append(f"**Original text:**\n```\n{edit.original_text}\n```\n")
+            parts.append(f"**Replacement:**\n```\n{edit.replacement_text}\n```\n")
+            parts.append(f"**Rationale:** {edit.rationale}\n")
+
+    parts.append(_REVIEW_ROUND_INSTRUCTIONS)
+    return "".join(parts)
+
+
+def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
+    """Apply edits to files in the working tree.
+
+    Returns list of modified file paths.
+    Raises ValueError if any original_text is not found in its file.
+    """
+    edits_by_file: dict[str, list[FileEdit]] = {}
+    for edit in edits:
+        edits_by_file.setdefault(edit.file, []).append(edit)
+
+    modified = []
+    for filepath, file_edits in sorted(edits_by_file.items()):
+        full_path = repo_root / filepath
+        content = full_path.read_text()
+
+        # Sort edits by position in reverse order to preserve offsets
+        positioned = []
+        for edit in file_edits:
+            offset = content.find(edit.original_text)
+            if offset == -1:
+                continue  # skip edits that can't be applied
+            positioned.append((offset, edit))
+
+        positioned.sort(key=lambda x: x[0], reverse=True)
+
+        for offset, edit in positioned:
+            end = offset + len(edit.original_text)
+            content = content[:offset] + edit.replacement_text + content[end:]
+
+        full_path.write_text(content)
+        modified.append(filepath)
+
+    return modified
+
+
+def build_diff_preview(edits: list[FileEdit], file_contents: dict[str, str]) -> str:
+    """Generate a unified diff preview of what edits would produce."""
+    edits_by_file: dict[str, list[FileEdit]] = {}
+    for edit in edits:
+        edits_by_file.setdefault(edit.file, []).append(edit)
+
+    diff_parts = []
+    for filepath in sorted(edits_by_file.keys()):
+        original = file_contents.get(filepath, "")
+        modified = original
+        for edit in edits_by_file[filepath]:
+            modified = modified.replace(edit.original_text, edit.replacement_text, 1)
+
+        diff = difflib.unified_diff(
+            original.splitlines(keepends=True),
+            modified.splitlines(keepends=True),
+            fromfile=f"a/{filepath}",
+            tofile=f"b/{filepath}",
+        )
+        diff_parts.append("".join(diff))
+
+    return "\n".join(part for part in diff_parts if part)
