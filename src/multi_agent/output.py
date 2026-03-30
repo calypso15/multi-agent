@@ -300,13 +300,20 @@ def print_iteration_exhausted(
     max_rounds: int,
     approvals: int,
     total: int,
+    best_round: int = -1,
 ) -> None:
     """Warn when consensus was not reached within max rounds."""
     console.print()
+    round_note = ""
+    if best_round >= 0:
+        round_note = (
+            f"\nUsing proposals from round {best_round + 1} "
+            f"({approvals}/{total} approved) — the highest approval seen."
+        )
     console.print(Panel(
-        f"Maximum rounds ({max_rounds}) reached without full consensus "
-        f"({approvals}/{total} approved).\n"
-        "Showing best available proposals. Review carefully before accepting.",
+        f"Maximum rounds ({max_rounds}) reached without full consensus."
+        + round_note
+        + "\nReview carefully before accepting.",
         title="CONSENSUS NOT REACHED",
         border_style="yellow",
     ))

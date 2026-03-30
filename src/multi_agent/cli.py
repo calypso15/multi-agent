@@ -132,16 +132,13 @@ def _run_iteration_and_present(
         else:
             print_iteration_success(0, 0)
     else:
-        last_round = result.rounds[-1] if result.rounds else None
-        approvals = 0
-        total = 0
-        if last_round:
-            approvals = sum(
-                1 for r in last_round.reviews
-                if r.all_approved and r.error is None
-            )
-            total = len(last_round.reviews)
-        print_iteration_exhausted(config.general.max_rounds, approvals, total)
+        total = len(result.rounds[-1].reviews) if result.rounds else 0
+        print_iteration_exhausted(
+            config.general.max_rounds,
+            result.best_approvals,
+            total,
+            result.best_round,
+        )
 
     # Show diff
     print_final_diff(diff_text)

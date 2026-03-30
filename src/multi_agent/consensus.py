@@ -149,6 +149,8 @@ class IterationResult:
     files_reviewed: list[str]
     total_usage: TokenUsage = field(default_factory=TokenUsage)
     dissents: list[Dissent] = field(default_factory=list)
+    best_round: int = -1
+    best_approvals: int = 0
 
 
 def _parse_issues(raw_issues: list[dict[str, Any]]) -> list[ReviewIssue]:
@@ -1072,6 +1074,11 @@ async def run_iteration_loop(
     current_proposals = proposals
     consensus = False
 
+    # Track the best (highest approval) proposals seen
+    best_proposals = current_proposals
+    best_approvals = 0
+    best_round = -1
+
     for round_num in range(config.general.max_rounds):
         reviews = await run_review_phase(
             config, current_proposals, file_contents, canon,
@@ -1095,6 +1102,12 @@ async def run_iteration_loop(
             on_phase("review_done", round_num, reviews,
                      config.general.consensus_threshold)
 
+        # Track the version with the highest approval count
+        if approvals >= best_approvals:
+            best_approvals = approvals
+            best_proposals = current_proposals
+            best_round = round_num
+
         if consensus_reached:
             consensus = True
             break
@@ -1106,13 +1119,17 @@ async def run_iteration_loop(
         for proposal in current_proposals:
             proposal.edits = validate_edits(proposal.edits, file_contents)
 
-    # 7. Flatten final edits
+    # 7. Use the best proposals if consensus wasn't reached
+    if not consensus:
+        current_proposals = best_proposals
+
+    # 8. Flatten final edits
     final_edits = []
     for p in current_proposals:
         final_edits.extend(p.edits)
     final_edits = deduplicate_edits(final_edits)
 
-    # 8. Collect dissenting opinions if consensus was not reached
+    # 9. Collect dissenting opinions if consensus was not reached
     dissents: list[Dissent] = []
     if not consensus and rounds and final_edits:
         last_reviews = rounds[-1].reviews
@@ -1140,4 +1157,6 @@ async def run_iteration_loop(
         files_reviewed=files_reviewed,
         total_usage=total_usage,
         dissents=dissents,
+        best_round=best_round,
+        best_approvals=best_approvals,
     )
