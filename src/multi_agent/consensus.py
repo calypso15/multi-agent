@@ -820,11 +820,10 @@ async def run_review_phase(
     round_number: int,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentReviewResponse]:
-    """Run all enabled agents in review mode (parallel)."""
-    review_prompt = build_review_round_prompt(
-        proposals, file_contents, canon, round_number,
-    )
+    """Run all enabled agents in review mode (parallel).
 
+    Each agent only reviews proposals from OTHER agents — not its own.
+    """
     reviews: list[AgentReviewResponse] = []
 
     async with asyncio.TaskGroup() as tg:
@@ -832,6 +831,23 @@ async def run_review_phase(
         for name, agent_cfg in config.agents.items():
             if not agent_cfg.enabled:
                 continue
+            # Filter out this agent's own proposals
+            other_proposals = [
+                p for p in proposals if p.agent_name != name
+            ]
+            # If no other proposals to review, auto-approve
+            if not any(p.edits for p in other_proposals):
+                reviews.append(AgentReviewResponse(
+                    agent_name=name,
+                    all_approved=True,
+                    proposal_reviews=[],
+                    summary="No proposals from other agents to review.",
+                ))
+                continue
+
+            review_prompt = build_review_round_prompt(
+                other_proposals, file_contents, canon, round_number,
+            )
             system_prompt = build_agent_system_prompt(
                 name, "review", agent_cfg.system_prompt_override,
             )

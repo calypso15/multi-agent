@@ -83,6 +83,7 @@ def _run_iteration_and_present(
     hook_mode: bool,
     task: str | None = None,
     custom_task_prompt: str | None = None,
+    task_label: str | None = None,
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
     from multi_agent.consensus import run_iteration_loop
@@ -96,7 +97,8 @@ def _run_iteration_and_present(
         elif event == "dissents_done":
             print_dissents(args[0])
 
-    print_header(files_display, canon_count, canon_size_kb, uncommitted_canon, task=task)
+    display_task = task_label or task
+    print_header(files_display, canon_count, canon_size_kb, uncommitted_canon, task=display_task)
 
     result = asyncio.run(run_iteration_loop(
         config, str(repo_root), target_files=target_files,
@@ -180,6 +182,7 @@ def _review_common(
     dry_run: bool,
     max_rounds: int | None,
     task_name: str | None,
+    prompt: str | None = None,
 ) -> None:
     """Shared implementation for review, expand, and contract commands."""
     try:
@@ -196,6 +199,26 @@ def _review_common(
         config.general.max_rounds = max_rounds
 
     task, custom_task_prompt = _resolve_task(task_name, config)
+
+    # --prompt: append user instructions to the task prompt
+    task_label = task  # preserve original task name for display
+    if prompt:
+        if task is None:
+            # No task specified — treat prompt as a custom task
+            task = "custom"
+            task_label = "prompt"
+            custom_task_prompt = prompt
+        elif task == "custom":
+            # Config-defined task — append user instructions
+            custom_task_prompt = f"{custom_task_prompt}\n\n{prompt}"
+        else:
+            # Built-in task (expand/contract) — switch to custom with
+            # the built-in's suffix + user instructions
+            from multi_agent.agents import _MODE_SUFFIXES
+            builtin_instructions = _MODE_SUFFIXES.get(task, "")
+            task_label = task  # keep showing "expand" or "contract"
+            task = "custom"
+            custom_task_prompt = f"{builtin_instructions.strip()}\n\nAdditional instructions: {prompt}"
 
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
@@ -247,6 +270,7 @@ def _review_common(
         hook_mode=hook_mode,
         task=task,
         custom_task_prompt=custom_task_prompt,
+        task_label=task_label,
     )
     sys.exit(exit_code)
 
@@ -263,6 +287,8 @@ def _review_common(
               help="Override max iteration rounds.")
 @click.option("--task", "task_name", default=None,
               help="Task mode: expand, contract, or a custom task from config.")
+@click.option("--prompt", "prompt", default=None,
+              help="Additional instructions for the agents.")
 @click.pass_context
 def review(
     ctx: click.Context,
@@ -272,6 +298,7 @@ def review(
     dry_run: bool,
     max_rounds: int | None,
     task_name: str | None,
+    prompt: str | None,
 ) -> None:
     """Review files and propose changes via consensus.
 
@@ -282,10 +309,10 @@ def review(
     Examples:
         multi-agent review canon/chapter-01.md
         multi-agent review --task expand canon/chapter-03.md
-        multi-agent review canon/
+        multi-agent review --prompt "Add epigraphs to each section" canon/
         multi-agent review                  # reviews staged files
     """
-    _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name)
+    _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name, prompt)
 
 
 @main.command()
@@ -296,6 +323,8 @@ def review(
               help="Show proposed changes without applying.")
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
+@click.option("--prompt", "prompt", default=None,
+              help="Additional instructions for the agents.")
 @click.pass_context
 def expand(
     ctx: click.Context,
@@ -303,6 +332,7 @@ def expand(
     config_path: str | None,
     dry_run: bool,
     max_rounds: int | None,
+    prompt: str | None,
 ) -> None:
     """Expand files with richer detail via consensus.
 
@@ -311,9 +341,9 @@ def expand(
     \b
     Examples:
         multi-agent expand canon/chapter-03.md
-        multi-agent expand canon/
+        multi-agent expand --prompt "Focus on the descent sequence" canon/chapter-05.md
     """
-    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "expand")
+    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "expand", prompt)
 
 
 @main.command()
@@ -324,6 +354,8 @@ def expand(
               help="Show proposed changes without applying.")
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
+@click.option("--prompt", "prompt", default=None,
+              help="Additional instructions for the agents.")
 @click.pass_context
 def contract(
     ctx: click.Context,
@@ -331,6 +363,7 @@ def contract(
     config_path: str | None,
     dry_run: bool,
     max_rounds: int | None,
+    prompt: str | None,
 ) -> None:
     """Tighten prose and cut filler via consensus.
 
@@ -339,9 +372,9 @@ def contract(
     \b
     Examples:
         multi-agent contract canon/chapter-03.md
-        multi-agent contract canon/
+        multi-agent contract --prompt "Preserve all dialogue" canon/chapter-05.md
     """
-    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "contract")
+    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "contract", prompt)
 
 
 @main.command("install-hook")
