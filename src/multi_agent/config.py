@@ -10,10 +10,12 @@ from pathlib import Path
 @dataclass
 class AgentConfig:
     enabled: bool = True
-    model: str | None = None
+    propose_model: str | None = None
     review_model: str | None = None
     system_prompt_override: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
+    propose_max_turns: int | None = None
+    review_max_turns: int | None = None
 
 
 @dataclass
@@ -25,8 +27,8 @@ class GeneralConfig:
     max_canon_size_kb: int = 500
     max_rounds: int = 3
     min_severity: str = "minor"
-    propose_max_turns: int = 3
-    review_max_turns: int = 2
+    propose_max_turns: int = 1
+    review_max_turns: int = 1
 
 
 @dataclass
@@ -94,10 +96,12 @@ def load_config(
         for name, agent_raw in raw["agents"].items():
             agent_cfg = AgentConfig(
                 enabled=agent_raw.get("enabled", True),
-                model=agent_raw.get("model"),
+                propose_model=agent_raw.get("propose_model"),
                 review_model=agent_raw.get("review_model"),
                 system_prompt_override=agent_raw.get("system_prompt_override"),
                 allowed_tools=agent_raw.get("allowed_tools", []),
+                propose_max_turns=agent_raw.get("propose_max_turns"),
+                review_max_turns=agent_raw.get("review_max_turns"),
             )
             config.agents[name] = agent_cfg
 

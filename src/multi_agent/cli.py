@@ -440,7 +440,7 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
     console.print("[bold]Agents:[/bold]")
     for name, agent in config.agents.items():
         status = "[green]enabled[/green]" if agent.enabled else "[red]disabled[/red]"
-        model = agent.model or "default"
+        model = agent.propose_model or "default"
         review_model = agent.review_model or model
         tools = ", ".join(agent.allowed_tools) if agent.allowed_tools else "none"
         console.print(f"  {name}: {status} (propose: {model}, review: {review_model}, tools: {tools})")

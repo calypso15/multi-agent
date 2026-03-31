@@ -422,6 +422,9 @@ def build_agent_system_prompt(
     return base + suffix
 
 
+_ALL_TOOLS = "Bash,Read,Glob,Grep,Edit,Write,Agent,Skill,ToolSearch"
+
+
 def build_cli_args(
     agent_name: str,
     system_prompt: str,
@@ -442,6 +445,9 @@ def build_cli_args(
 
     if allowed_tools:
         args.extend(["--allowedTools", ",".join(allowed_tools)])
+    else:
+        # Disable all tools so agents respond from inline context only
+        args.extend(["--disallowedTools", _ALL_TOOLS])
 
     if model:
         args.extend(["--model", model])

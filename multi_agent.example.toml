@@ -26,12 +26,12 @@ max_rounds = 3
 # Set to "major" to skip minor/stylistic nitpicks and focus on real issues
 min_severity = "minor"
 
-# Maximum turns per agent in the propose phase
-# Increase if agents have allowed_tools (they need turns for tool use)
-propose_max_turns = 5
+# Maximum turns per agent in the propose phase (1 is enough without tools;
+# increase if agents have allowed_tools like WebSearch)
+propose_max_turns = 1
 
 # Maximum turns per agent in review rounds
-review_max_turns = 2
+review_max_turns = 1
 
 # Each agent section can override model or provide a custom system prompt.
 # Disable an agent by setting enabled = false.
@@ -39,7 +39,7 @@ review_max_turns = 2
 
 [agents.scientific_rigor]
 enabled = true
-model = "claude-sonnet-4-6"
+propose_model = "claude-sonnet-4-6"
 # review_model = "claude-haiku-4-5-20251001"
 # Tools available during the propose phase (e.g. web search for fact-checking)
 allowed_tools = ["WebSearch", "WebFetch"]
@@ -47,12 +47,12 @@ allowed_tools = ["WebSearch", "WebFetch"]
 
 [agents.canon_continuity]
 enabled = true
-model = "claude-sonnet-4-6"
+propose_model = "claude-sonnet-4-6"
 # review_model = "claude-haiku-4-5-20251001"
 
 [agents.sociopolitical]
 enabled = true
-model = "claude-sonnet-4-6"
+propose_model = "claude-sonnet-4-6"
 # review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
 

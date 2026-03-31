@@ -353,7 +353,7 @@ async def run_consensus(
             continue
         system_prompt = agent_cfg.system_prompt_override or AGENT_PROMPTS[name]
         enabled_agents[name] = build_cli_args(
-            name, system_prompt, agent_cfg.model, repo_root,
+            name, system_prompt, agent_cfg.propose_model, repo_root,
         )
 
     # Launch all agents in parallel
@@ -442,7 +442,7 @@ async def run_file_review(
             continue
         system_prompt = agent_cfg.system_prompt_override or AGENT_PROMPTS[name]
         enabled_agents[name] = build_cli_args(
-            name, system_prompt, agent_cfg.model, repo_root,
+            name, system_prompt, agent_cfg.propose_model, repo_root,
         )
 
     # Launch all agents in parallel
@@ -793,9 +793,10 @@ async def run_propose_phase(
                 name, mode, agent_cfg.system_prompt_override,
                 custom_task_prompt=custom_task_prompt,
             )
+            max_turns = agent_cfg.propose_max_turns or config.general.propose_max_turns
             cli_args = build_cli_args(
-                name, system_prompt, agent_cfg.model, repo_root,
-                max_turns=config.general.propose_max_turns,
+                name, system_prompt, agent_cfg.propose_model, repo_root,
+                max_turns=max_turns,
                 allowed_tools=agent_cfg.allowed_tools or None,
             )
             tasks[name] = tg.create_task(
@@ -851,10 +852,11 @@ async def run_review_phase(
             system_prompt = build_agent_system_prompt(
                 name, "review", agent_cfg.system_prompt_override,
             )
-            model = agent_cfg.review_model or agent_cfg.model
+            model = agent_cfg.review_model or agent_cfg.propose_model
+            max_turns = agent_cfg.review_max_turns or config.general.review_max_turns
             cli_args = build_cli_args(
                 name, system_prompt, model, repo_root,
-                max_turns=config.general.review_max_turns,
+                max_turns=max_turns,
             )
             tasks[name] = tg.create_task(
                 _run_single_reviewer(
@@ -976,7 +978,7 @@ async def _collect_dissents(
             if not agent_cfg or not agent_cfg.enabled:
                 continue
             system_prompt = build_agent_system_prompt(name, "dissent")
-            model = agent_cfg.review_model or agent_cfg.model
+            model = agent_cfg.review_model or agent_cfg.propose_model
             cli_args = build_cli_args(
                 name, system_prompt, model, repo_root,
                 max_turns=1,
