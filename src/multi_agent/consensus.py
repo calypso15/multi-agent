@@ -902,7 +902,7 @@ async def run_propose_phase(
                 name, mode, agent_cfg.system_prompt_override,
                 custom_task_prompt=custom_task_prompt,
             )
-            max_turns = agent_cfg.propose_max_turns or config.general.propose_max_turns
+            max_turns = agent_cfg.propose_max_turns if agent_cfg.propose_max_turns is not None else config.general.propose_max_turns
             cli_args = build_cli_args(
                 name, system_prompt, agent_cfg.propose_model, repo_root,
                 max_turns=max_turns,
@@ -962,7 +962,7 @@ async def run_review_phase(
                 name, "review", agent_cfg.system_prompt_override,
             )
             model = agent_cfg.review_model or agent_cfg.propose_model
-            max_turns = agent_cfg.review_max_turns or config.general.review_max_turns
+            max_turns = agent_cfg.review_max_turns if agent_cfg.review_max_turns is not None else config.general.review_max_turns
             cli_args = build_cli_args(
                 name, system_prompt, model, repo_root,
                 max_turns=max_turns,

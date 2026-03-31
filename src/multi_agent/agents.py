@@ -475,7 +475,7 @@ def build_cli_args(
     system_prompt: str,
     model: str | None,
     repo_root: str,
-    max_turns: int = 1,
+    max_turns: int = 0,
     allowed_tools: list[str] | None = None,
 ) -> list[str]:
     """Build command-line arguments for a `claude` CLI invocation."""
@@ -484,7 +484,12 @@ def build_cli_args(
         "--print",                       # Non-interactive, print result
         "--output-format", "stream-json", # Stream JSON events for tool visibility
         "--verbose",                     # Required for stream-json with --print
-        "--max-turns", str(max_turns),
+    ]
+
+    if max_turns > 0:
+        args.extend(["--max-turns", str(max_turns)])
+
+    args += [
         "--system-prompt", system_prompt,
         "--permission-mode", "bypassPermissions",
     ]
