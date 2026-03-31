@@ -351,11 +351,21 @@ def build_review_round_prompt(
     return "".join(parts)
 
 
+def _apply_edits_to_text(content: str, edits: list[FileEdit]) -> str:
+    """Apply edits to a string using sequential str.replace.
+
+    This is the single implementation used by both apply_edits and
+    build_diff_preview to ensure the preview always matches the result.
+    """
+    for edit in edits:
+        content = content.replace(edit.original_text, edit.replacement_text, 1)
+    return content
+
+
 def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
     """Apply edits to files in the working tree.
 
     Returns list of modified file paths.
-    Raises ValueError if any original_text is not found in its file.
     """
     edits_by_file: dict[str, list[FileEdit]] = {}
     for edit in edits:
@@ -365,21 +375,7 @@ def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
     for filepath, file_edits in sorted(edits_by_file.items()):
         full_path = repo_root / filepath
         content = full_path.read_text()
-
-        # Sort edits by position in reverse order to preserve offsets
-        positioned = []
-        for edit in file_edits:
-            offset = content.find(edit.original_text)
-            if offset == -1:
-                continue  # skip edits that can't be applied
-            positioned.append((offset, edit))
-
-        positioned.sort(key=lambda x: x[0], reverse=True)
-
-        for offset, edit in positioned:
-            end = offset + len(edit.original_text)
-            content = content[:offset] + edit.replacement_text + content[end:]
-
+        content = _apply_edits_to_text(content, file_edits)
         full_path.write_text(content)
         modified.append(filepath)
 
@@ -395,9 +391,7 @@ def build_diff_preview(edits: list[FileEdit], file_contents: dict[str, str]) -> 
     diff_parts = []
     for filepath in sorted(edits_by_file.keys()):
         original = file_contents.get(filepath, "")
-        modified = original
-        for edit in edits_by_file[filepath]:
-            modified = modified.replace(edit.original_text, edit.replacement_text, 1)
+        modified = _apply_edits_to_text(original, edits_by_file[filepath])
 
         diff = difflib.unified_diff(
             original.splitlines(keepends=True),

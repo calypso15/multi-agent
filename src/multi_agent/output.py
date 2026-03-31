@@ -16,7 +16,9 @@ from multi_agent.consensus import (
     AgentProposal,
     AgentReview,
     AgentReviewResponse,
+    ArbitrationResult,
     ConsensusResult,
+    ContestedEdit,
     Dissent,
     IterationResult,
     TokenUsage,
@@ -269,7 +271,7 @@ def print_final_diff(diff_text: str) -> None:
     console.print()
     console.print(Rule("[bold cyan]Proposed Changes[/bold cyan]", style="cyan"))
     console.print()
-    syntax = Syntax(diff_text, "diff", theme="monokai", line_numbers=False)
+    syntax = Syntax(diff_text, "diff", theme="monokai", line_numbers=False, word_wrap=True)
     console.print(syntax)
 
 
@@ -328,6 +330,26 @@ def print_iteration_success(approvals: int, total: int) -> None:
         title="CONSENSUS",
         border_style="green",
     ))
+
+
+def print_arbitration_start(contested: list[ContestedEdit]) -> None:
+    """Print that arbitration is starting."""
+    console.print()
+    console.print(Rule(
+        f"[bold yellow]Arbitration[/bold yellow]  "
+        f"[dim]({len(contested)} contested edit(s))[/dim]",
+        style="yellow",
+    ))
+    for ce in contested:
+        agents = ", ".join(ce.versions.keys())
+        console.print(f"  [yellow]{ce.file}[/yellow] — competing versions from: {agents}")
+
+
+def print_arbitration_done(results: list[ArbitrationResult]) -> None:
+    """Print arbitration results."""
+    for ar in results:
+        console.print(f"\n  [green]Resolved:[/green] {ar.file}")
+        console.print(f"  [dim]{ar.rationale}[/dim]")
 
 
 def print_dissents(dissents: list[Dissent]) -> None:

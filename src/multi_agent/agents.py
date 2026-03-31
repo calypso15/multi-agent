@@ -382,6 +382,37 @@ DISSENT_OUTPUT_FORMAT = json.dumps({
     },
 })
 
+ARBITRATOR_PROMPT = """\
+You are an impartial arbitrator for a fiction review system. Two specialist \
+agents have proposed conflicting versions of the same text and cannot agree.
+
+Your job is to pick the better version OR merge them into a single version \
+that resolves both agents' concerns. You have no specialty bias — judge \
+purely on quality, consistency, and which version better serves the story.
+
+Be decisive. Return your response as JSON with:
+- "replacement_text": the final text (pick one version or merge)
+- "rationale": one sentence explaining your decision
+"""
+
+ARBITRATOR_OUTPUT_FORMAT = json.dumps({
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "replacement_text": {
+                "type": "string",
+                "description": "The final replacement text.",
+            },
+            "rationale": {
+                "type": "string",
+                "description": "One-sentence explanation of the decision.",
+            },
+        },
+        "required": ["replacement_text", "rationale"],
+    },
+})
+
 _MODE_SUFFIXES: dict[str, str] = {
     "propose": PROPOSE_MODE_SUFFIX,
     "expand": EXPAND_MODE_SUFFIX,

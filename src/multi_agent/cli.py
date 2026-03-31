@@ -12,6 +12,8 @@ from multi_agent.config import load_config
 from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
+    print_arbitration_done,
+    print_arbitration_start,
     print_changes_applied,
     print_confirmation_prompt,
     print_dissents,
@@ -94,6 +96,10 @@ def _run_iteration_and_present(
             print_proposals_summary(args[0])
         elif event == "review_done":
             print_review_round(args[0], args[1], args[2])
+        elif event == "arbitration_start":
+            print_arbitration_start(args[0])
+        elif event == "arbitration_done":
+            print_arbitration_done(args[0])
         elif event == "dissents_done":
             print_dissents(args[0])
 

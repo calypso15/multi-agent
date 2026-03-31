@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from multi_agent.agents import (
     AGENT_PROMPTS,
+    ARBITRATOR_PROMPT,
     build_agent_system_prompt,
     build_cli_args,
 )
@@ -704,11 +705,15 @@ def validate_edits(
 
 
 def deduplicate_edits(edits: list[FileEdit]) -> list[FileEdit]:
-    """Remove duplicate edits (same file, original_text, replacement_text)."""
-    seen: set[tuple[str, str, str]] = set()
+    """Remove duplicate and conflicting edits.
+
+    When multiple edits target the same (file, original_text) with different
+    replacements, only the first one is kept. Exact duplicates are also removed.
+    """
+    seen: set[tuple[str, str]] = set()
     result = []
     for edit in edits:
-        key = (edit.file, edit.original_text, edit.replacement_text)
+        key = (edit.file, edit.original_text)
         if key not in seen:
             seen.add(key)
             result.append(edit)
@@ -998,6 +1003,209 @@ async def _collect_dissents(
     return dissents
 
 
+@dataclass
+class ContestedEdit:
+    """An edit that two agents keep modifying back and forth."""
+    file: str
+    original_text: str
+    versions: dict[str, str]  # agent_name → replacement_text
+    rationales: dict[str, str]  # agent_name → rationale
+
+
+@dataclass
+class ArbitrationResult:
+    file: str
+    original_text: str
+    replacement_text: str
+    rationale: str
+    usage: TokenUsage = field(default_factory=TokenUsage)
+
+
+def _detect_stall(
+    rounds: list[IterationRound],
+    best_approvals: int,
+) -> bool:
+    """Detect if the review loop has stalled (no improvement for 2 rounds)."""
+    if len(rounds) < 2:
+        return False
+    recent = rounds[-2:]
+    for rnd in recent:
+        approvals = sum(
+            1 for r in rnd.reviews if r.all_approved and r.error is None
+        )
+        if approvals > best_approvals:
+            return False
+    return True
+
+
+def _find_contested_edits(
+    rounds: list[IterationRound],
+    current_proposals: list[AgentProposal],
+) -> list[ContestedEdit]:
+    """Find edits that have been modified in 2+ consecutive rounds."""
+    if len(rounds) < 2:
+        return []
+
+    # Track which (original_agent, edit_index) pairs were modified each round
+    modified_per_round: list[set[tuple[str, int]]] = []
+    for rnd in rounds:
+        modified = set()
+        for review in rnd.reviews:
+            for pr in review.proposal_reviews:
+                if pr.verdict == "MODIFY":
+                    modified.add((pr.original_agent, pr.edit_index))
+        modified_per_round.append(modified)
+
+    # Find edits modified in the last 2 rounds
+    if len(modified_per_round) < 2:
+        return []
+    contested_keys = modified_per_round[-1] & modified_per_round[-2]
+
+    if not contested_keys:
+        return []
+
+    # Build contested edit objects with both versions
+    contested = []
+    last_reviews = rounds[-1].reviews
+    prev_reviews = rounds[-2].reviews
+
+    for agent_name, edit_idx in contested_keys:
+        # Find the edit in current proposals
+        proposal = next(
+            (p for p in current_proposals if p.agent_name == agent_name),
+            None,
+        )
+        if not proposal or edit_idx >= len(proposal.edits):
+            continue
+
+        edit = proposal.edits[edit_idx]
+        versions: dict[str, str] = {}
+        rationales: dict[str, str] = {}
+
+        # Collect versions from the last two rounds' modifiers
+        for rnd_reviews in (prev_reviews, last_reviews):
+            for review in rnd_reviews:
+                for pr in review.proposal_reviews:
+                    if (pr.original_agent == agent_name
+                            and pr.edit_index == edit_idx
+                            and pr.verdict == "MODIFY"
+                            and pr.modified_replacement):
+                        versions[review.agent_name] = pr.modified_replacement
+                        rationales[review.agent_name] = pr.rationale
+
+        # Also include the current version
+        versions[agent_name] = edit.replacement_text
+        rationales.setdefault(agent_name, edit.rationale)
+
+        if len(versions) >= 2:
+            contested.append(ContestedEdit(
+                file=edit.file,
+                original_text=edit.original_text,
+                versions=versions,
+                rationales=rationales,
+            ))
+
+    return contested
+
+
+def _build_arbitration_prompt(
+    contested: ContestedEdit,
+    file_contents: dict[str, str],
+) -> str:
+    """Build the prompt for an arbitration call."""
+    parts = ["# CONTESTED EDIT\n\n"]
+    parts.append(f"**File:** {contested.file}\n\n")
+    parts.append(f"**Original text being replaced:**\n```\n{contested.original_text}\n```\n\n")
+
+    parts.append("## Competing Versions\n\n")
+    for agent_name, replacement in contested.versions.items():
+        rationale = contested.rationales.get(agent_name, "")
+        parts.append(f"### Version from {agent_name}\n")
+        parts.append(f"```\n{replacement}\n```\n")
+        if rationale:
+            parts.append(f"**Rationale:** {rationale}\n\n")
+
+    parts.append(
+        "# YOUR TASK\n"
+        "Pick the better version or merge them. Return JSON with "
+        "\"replacement_text\" and \"rationale\".\n"
+    )
+    return "".join(parts)
+
+
+async def _run_arbitration(
+    contested_edits: list[ContestedEdit],
+    file_contents: dict[str, str],
+    config: MultiAgentConfig,
+    repo_root: str,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> list[ArbitrationResult]:
+    """Run arbitration on contested edits."""
+    results: list[ArbitrationResult] = []
+
+    # Use the review_model of the first enabled agent, or fall back to default
+    model = None
+    for agent_cfg in config.agents.values():
+        if agent_cfg.enabled:
+            model = agent_cfg.review_model or agent_cfg.propose_model
+            break
+
+    async with asyncio.TaskGroup() as tg:
+        tasks_list = []
+        for i, contested in enumerate(contested_edits):
+            prompt = _build_arbitration_prompt(contested, file_contents)
+            cli_args = build_cli_args(
+                f"arbitrator_{i}",
+                ARBITRATOR_PROMPT,
+                model,
+                repo_root,
+                max_turns=1,
+            )
+
+            async def _run(p=prompt, args=cli_args, ce=contested):
+                if on_progress:
+                    on_progress("arbitrator", f"resolving conflict in {ce.file}")
+                start = time.monotonic()
+                proc = await asyncio.wait_for(
+                    _spawn_claude(args, p, repo_root),
+                    timeout=config.general.timeout_seconds,
+                )
+                stdout = proc.stdout or ""
+                output = _extract_json(stdout)
+                usage = _extract_usage(output) if output else TokenUsage()
+
+                if output and "result" in output and "replacement_text" not in output:
+                    inner = output["result"]
+                    if isinstance(inner, str):
+                        output = _extract_json(inner)
+                    elif isinstance(inner, dict):
+                        output = inner
+
+                replacement = ""
+                rationale = ""
+                if output:
+                    replacement = output.get("replacement_text", "")
+                    rationale = output.get("rationale", "")
+
+                if on_progress:
+                    on_progress("arbitrator", "done — conflict resolved")
+
+                return ArbitrationResult(
+                    file=ce.file,
+                    original_text=ce.original_text,
+                    replacement_text=replacement or list(ce.versions.values())[0],
+                    rationale=rationale,
+                    usage=usage,
+                )
+
+            tasks_list.append(tg.create_task(_run()))
+
+    for t in tasks_list:
+        results.append(t.result())
+
+    return results
+
+
 async def run_iteration_loop(
     config: MultiAgentConfig,
     repo_root: str,
@@ -1130,6 +1338,47 @@ async def run_iteration_loop(
             consensus = True
             break
 
+        # Detect stall — no improvement for 2 consecutive rounds
+        if _detect_stall(rounds, best_approvals):
+            contested = _find_contested_edits(
+                rounds, current_proposals,
+            )
+            if contested:
+                if on_phase:
+                    on_phase("arbitration_start", contested)
+
+                arb_results = await _run_arbitration(
+                    contested, file_contents, config, repo_root,
+                    on_progress,
+                )
+                for ar in arb_results:
+                    total_usage += ar.usage
+
+                # Apply arbitration results to current proposals
+                arb_lookup: dict[tuple[str, str], str] = {
+                    (ar.file, ar.original_text): ar.replacement_text
+                    for ar in arb_results
+                }
+                for proposal in current_proposals:
+                    for i, edit in enumerate(proposal.edits):
+                        key = (edit.file, edit.original_text)
+                        if key in arb_lookup:
+                            proposal.edits[i] = FileEdit(
+                                file=edit.file,
+                                original_text=edit.original_text,
+                                replacement_text=arb_lookup[key],
+                                rationale=edit.rationale,
+                            )
+
+                if on_phase:
+                    on_phase("arbitration_done", arb_results)
+
+                # Run one more review round with the arbitrated edits
+                continue
+
+            # No contested edits found but still stalled — exit early
+            break
+
         # Merge modifications for next round
         current_proposals = merge_proposals(current_proposals, reviews)
 
@@ -1148,11 +1397,12 @@ async def run_iteration_loop(
     final_edits = deduplicate_edits(final_edits)
 
     # 9. Collect dissenting opinions if consensus was not reached
+    #    Use the best round's reviews to identify dissenters (not the last round)
     dissents: list[Dissent] = []
     if not consensus and rounds and final_edits:
-        last_reviews = rounds[-1].reviews
+        best_round_reviews = rounds[best_round].reviews
         dissenting_agents = [
-            r.agent_name for r in last_reviews
+            r.agent_name for r in best_round_reviews
             if not r.all_approved and r.error is None
         ]
         if dissenting_agents:
