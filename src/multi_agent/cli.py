@@ -142,10 +142,12 @@ def _run_iteration_and_present(
     else:
         total = len(result.rounds[-1].reviews) if result.rounds else 0
         print_iteration_exhausted(
-            config.general.max_rounds,
-            result.best_approvals,
-            total,
-            result.best_round,
+            rounds_run=len(result.rounds),
+            max_rounds=config.general.max_rounds,
+            approvals=result.best_approvals,
+            total=total,
+            best_round=result.best_round,
+            stalled=result.stalled,
         )
 
     # Show diff

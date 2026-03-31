@@ -158,7 +158,7 @@ def count_uncommitted_canon(
 _REVIEW_INSTRUCTIONS = (
     "\n# YOUR TASK\n"
     "Review the content above according to your specialty. "
-    "All canon and file contents are provided inline above.\n\n"
+    "Use the Read tool to examine any canon files relevant to your review.\n\n"
     "Return your structured verdict as JSON with:\n"
     '- "verdict": "APPROVE" or "REQUEST_CHANGES"\n'
     '- "summary": one-paragraph summary of your review\n'
@@ -175,14 +175,19 @@ _REVIEW_INSTRUCTIONS = (
 
 
 def _canon_section(canon: dict[str, str]) -> str:
-    """Build the canon context section of a prompt."""
+    """Build the canon context section of a prompt.
+
+    Lists file paths and sizes instead of inlining content.
+    Agents use the Read tool to explore files they consider relevant.
+    """
     parts: list[str] = []
     if canon:
-        parts.append("# EXISTING CANON (committed files)\n")
-        parts.append("These are the established files in the universe. "
-                      "Use them to check for consistency.\n")
+        parts.append("# EXISTING CANON (established files)\n")
+        parts.append("These files form the established universe. Use the Read "
+                      "tool to examine any files relevant to your review.\n\n")
         for path, content in sorted(canon.items()):
-            parts.append(f"\n## {path}\n```\n{content}\n```\n")
+            size_kb = len(content.encode()) / 1024
+            parts.append(f"- {path} ({size_kb:.1f} KB)\n")
     else:
         parts.append("# EXISTING CANON\n")
         parts.append("No prior canon exists yet. This appears to be the first "
@@ -256,7 +261,7 @@ def _propose_instructions(min_severity: str, task: str | None = None) -> str:
         return (
             "\n# YOUR TASK\n"
             "Apply the task described in your system prompt to the content above. "
-            "All canon and file contents are provided inline.\n\n"
+            "Use the Read tool to examine any canon files relevant to your review.\n\n"
             "Return your response as JSON.\n"
         )
 
@@ -264,7 +269,7 @@ def _propose_instructions(min_severity: str, task: str | None = None) -> str:
         return (
             "\n# YOUR TASK\n"
             "Apply the task described in your system prompt to the content above. "
-            "All canon and file contents are provided inline.\n\n"
+            "Use the Read tool to examine any canon files relevant to your review.\n\n"
             "Return your response as JSON.\n"
         )
 
@@ -282,7 +287,7 @@ def _propose_instructions(min_severity: str, task: str | None = None) -> str:
     return (
         "\n# YOUR TASK\n"
         "Review the content above from your specialty perspective and propose "
-        "concrete edits. All canon and file contents are provided inline.\n"
+        "concrete edits. Use the Read tool to examine canon files as needed.\n"
         + severity_note
         + "\nReturn your response as JSON.\n"
     )
@@ -291,7 +296,7 @@ _REVIEW_ROUND_INSTRUCTIONS = (
     "\n# YOUR TASK\n"
     "Review ALL proposals above from your specialty perspective. For each edit, "
     "decide whether it is acceptable or needs modification.\n\n"
-    "All canon and file contents are provided inline above.\n\n"
+    "Use the Read tool to examine any canon files relevant to your review.\n\n"
     "Return your response as JSON.\n"
 )
 

@@ -12,6 +12,17 @@ from rich.table import Table
 from rich.text import Text
 
 from multi_agent.agents import AGENT_DISPLAY_NAMES
+
+AGENT_COLORS: dict[str, str] = {
+    "scientific_rigor": "cyan",
+    "canon_continuity": "magenta",
+    "sociopolitical": "yellow",
+}
+
+
+def _agent_style(agent_name: str) -> str:
+    """Get the color style for an agent."""
+    return AGENT_COLORS.get(agent_name, "white")
 from multi_agent.consensus import (
     AgentProposal,
     AgentReview,
@@ -64,7 +75,8 @@ def print_header(
 def print_progress(agent_name: str, status: str) -> None:
     """Print a status update for an agent."""
     display = AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
-    console.print(f"  [dim]{display}:[/dim] {status}", highlight=False)
+    color = _agent_style(agent_name)
+    console.print(f"  [{color}]{display}:[/{color}] {status}", highlight=False)
 
 
 def print_results(result: ConsensusResult) -> None:
@@ -73,7 +85,8 @@ def print_results(result: ConsensusResult) -> None:
     console.print()
     for review in result.reviews:
         display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
-        name_text = f"  {display:<22}"
+        color = _agent_style(review.agent_name)
+        name_text = Text(f"  {display:<22}", style=color)
 
         if review.error:
             verdict_text = Text("ERROR", style="bold red")
@@ -84,7 +97,8 @@ def print_results(result: ConsensusResult) -> None:
 
         time_text = f"  {review.duration_seconds:.1f}s"
 
-        line = Text(name_text)
+        line = Text()
+        line.append(name_text)
         line.append(verdict_text)
         line.append(time_text, style="dim")
         console.print(line)
@@ -165,8 +179,11 @@ def print_error(message: str) -> None:
 # --- Iteration loop output ---
 
 
-def _agent_table(rows: list[tuple[str, Text, float]]) -> Table:
-    """Build a compact table of agent results."""
+def _agent_table(rows: list[tuple[str, str, Text, float]]) -> Table:
+    """Build a compact table of agent results.
+
+    rows: list of (display_name, agent_key, status_text, duration)
+    """
     table = Table(
         show_header=False,
         box=None,
@@ -177,8 +194,9 @@ def _agent_table(rows: list[tuple[str, Text, float]]) -> Table:
     table.add_column("Status")
     table.add_column("Time", justify="right", style="dim")
 
-    for name, status, duration in rows:
-        table.add_row(name, status, f"{duration:.1f}s")
+    for name, agent_key, status, duration in rows:
+        color = _agent_style(agent_key)
+        table.add_row(f"[{color}]{name}[/{color}]", status, f"{duration:.1f}s")
 
     return table
 
@@ -201,7 +219,7 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
             status = Text(f"{len(proposal.edits)} edit(s) ", style="bold cyan")
             status.append(f"({', '.join(files)})", style="dim")
 
-        rows.append((display, status, proposal.duration_seconds))
+        rows.append((display, proposal.agent_name, status, proposal.duration_seconds))
 
     console.print(_agent_table(rows))
 
@@ -245,7 +263,7 @@ def print_review_round(
             )
             status_text = Text(f"MODIFIED {mod_count}", style="bold yellow")
 
-        rows.append((display, status_text, review.duration_seconds))
+        rows.append((display, review.agent_name, status_text, review.duration_seconds))
 
     console.print(_agent_table(rows))
 
@@ -254,13 +272,16 @@ def print_review_round(
         if review.all_approved or review.error or not review.proposal_reviews:
             continue
         display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
+        color = _agent_style(review.agent_name)
         mods = [r for r in review.proposal_reviews if r.verdict == "MODIFY"]
         if mods:
-            console.print(f"\n  [dim]{display} modifications:[/dim]")
+            console.print(f"\n  [{color}]{display} modifications:[/{color}]")
             for mod in mods:
+                orig_display = AGENT_DISPLAY_NAMES.get(mod.original_agent, mod.original_agent)
+                orig_color = _agent_style(mod.original_agent)
                 console.print(
-                    f"    [yellow]edit {mod.edit_index}[/yellow] "
-                    f"from {mod.original_agent}: {mod.rationale}"
+                    f"    edit {mod.edit_index} "
+                    f"from [{orig_color}]{orig_display}[/{orig_color}]: {mod.rationale}"
                 )
 
 
@@ -299,13 +320,23 @@ def print_no_edits() -> None:
 
 
 def print_iteration_exhausted(
+    rounds_run: int,
     max_rounds: int,
     approvals: int,
     total: int,
     best_round: int = -1,
+    stalled: bool = False,
 ) -> None:
-    """Warn when consensus was not reached within max rounds."""
+    """Warn when consensus was not reached."""
     console.print()
+    if stalled:
+        reason = (
+            f"Stalled after {rounds_run} round(s) "
+            f"(no improvement, max was {max_rounds})."
+        )
+    else:
+        reason = f"All {max_rounds} rounds completed without full consensus."
+
     round_note = ""
     if best_round >= 0:
         round_note = (
@@ -313,9 +344,7 @@ def print_iteration_exhausted(
             f"({approvals}/{total} approved) — the highest approval seen."
         )
     console.print(Panel(
-        f"Maximum rounds ({max_rounds}) reached without full consensus."
-        + round_note
-        + "\nReview carefully before accepting.",
+        reason + round_note + "\nReview carefully before accepting.",
         title="CONSENSUS NOT REACHED",
         border_style="yellow",
     ))
@@ -341,8 +370,12 @@ def print_arbitration_start(contested: list[ContestedEdit]) -> None:
         style="yellow",
     ))
     for ce in contested:
-        agents = ", ".join(ce.versions.keys())
-        console.print(f"  [yellow]{ce.file}[/yellow] — competing versions from: {agents}")
+        agent_names = []
+        for key in ce.versions:
+            display = AGENT_DISPLAY_NAMES.get(key, key)
+            color = _agent_style(key)
+            agent_names.append(f"[{color}]{display}[/{color}]")
+        console.print(f"  {ce.file} — competing versions from: {', '.join(agent_names)}")
 
 
 def print_arbitration_done(results: list[ArbitrationResult]) -> None:
@@ -360,7 +393,8 @@ def print_dissents(dissents: list[Dissent]) -> None:
     console.print(Rule("[bold red]Dissenting Opinions[/bold red]", style="red"))
     for dissent in dissents:
         display = AGENT_DISPLAY_NAMES.get(dissent.agent_name, dissent.agent_name)
-        console.print(f"\n  [bold]{display}:[/bold]")
+        color = _agent_style(dissent.agent_name)
+        console.print(f"\n  [{color} bold]{display}:[/{color} bold]")
         console.print(f"  {dissent.opinion}")
     console.print()
 

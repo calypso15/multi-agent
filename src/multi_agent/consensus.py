@@ -14,6 +14,7 @@ from multi_agent.agents import (
     ARBITRATOR_PROMPT,
     build_agent_system_prompt,
     build_cli_args,
+    normalize_agent_name,
 )
 from multi_agent.config import MultiAgentConfig
 from multi_agent.context import (
@@ -152,6 +153,7 @@ class IterationResult:
     dissents: list[Dissent] = field(default_factory=list)
     best_round: int = -1
     best_approvals: int = 0
+    stalled: bool = False
 
 
 def _parse_issues(raw_issues: list[dict[str, Any]]) -> list[ReviewIssue]:
@@ -206,6 +208,44 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _unwrap_result(result_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Extract the agent's JSON response from the claude CLI result envelope.
+
+    The stream-json result event has a "result" field containing the agent's
+    text output, which itself should be JSON.
+    """
+    if result_json is None:
+        return None
+
+    # The result_json is the final "type": "result" event
+    inner = result_json.get("result")
+    if inner is None:
+        return None
+
+    if isinstance(inner, dict):
+        return inner
+
+    if isinstance(inner, str):
+        return _extract_json(inner)
+
+    return None
+
+
+def _make_tool_callback(
+    agent_name: str,
+    on_progress: Callable[[str, str], None] | None,
+) -> Callable[[str, str], None] | None:
+    """Wrap on_progress to format tool-use events for an agent."""
+    if not on_progress:
+        return None
+
+    def callback(tool_name: str, summary: str):
+        detail = f" {summary}" if summary else ""
+        on_progress(agent_name, f"  → {tool_name}{detail}")
+
+    return callback
+
+
 async def _run_single_agent(
     agent_name: str,
     review_prompt: str,
@@ -221,40 +261,32 @@ async def _run_single_agent(
         on_progress(agent_name, "starting")
 
     try:
-        proc = await asyncio.wait_for(
-            _spawn_claude(cli_args, review_prompt, repo_root),
+        result = await asyncio.wait_for(
+            _spawn_claude(
+                cli_args, review_prompt, repo_root,
+                on_tool_use=_make_tool_callback(agent_name, on_progress),
+            ),
             timeout=timeout_seconds,
         )
 
-        if proc.returncode != 0:
-            stderr_text = proc.stderr.strip() if proc.stderr else "unknown error"
+        if result.returncode != 0:
+            stderr_text = result.stderr.strip() if result.stderr else "unknown error"
             return AgentReview(
                 agent_name=agent_name,
                 verdict="REQUEST_CHANGES",
-                summary=f"Agent process failed (exit {proc.returncode}).",
+                summary=f"Agent process failed (exit {result.returncode}).",
                 error=stderr_text[:500],
                 duration_seconds=time.monotonic() - start,
             )
 
-        stdout = proc.stdout or ""
-
-        # claude --print --output-format json returns JSON with a "result" field
-        output = _extract_json(stdout)
-
-        # If the outer JSON has a "result" field (claude CLI wrapper), unwrap it
-        if output and "result" in output and "verdict" not in output:
-            inner = output["result"]
-            if isinstance(inner, str):
-                output = _extract_json(inner)
-            elif isinstance(inner, dict):
-                output = inner
+        output = _unwrap_result(result.result_json)
 
         if output is None:
             return AgentReview(
                 agent_name=agent_name,
                 verdict="REQUEST_CHANGES",
                 summary="Could not parse agent response.",
-                error=f"Unparseable output: {stdout[:300]}",
+                error=f"Unparseable output: {result.stdout[:300]}",
                 duration_seconds=time.monotonic() - start,
             )
 
@@ -294,12 +326,27 @@ async def _run_single_agent(
         )
 
 
+@dataclass
+class ClaudeResult:
+    """Parsed result from a claude CLI invocation."""
+    returncode: int
+    result_json: dict[str, Any] | None
+    stdout: str
+    stderr: str
+
+
 async def _spawn_claude(
     cli_args: list[str],
     prompt: str,
     cwd: str,
-) -> asyncio.subprocess.Process:
-    """Spawn a claude CLI process and pipe the prompt via stdin."""
+    on_tool_use: Callable[[str, str], None] | None = None,
+) -> ClaudeResult:
+    """Spawn a claude CLI process, stream events, and return the result.
+
+    With --output-format stream-json, reads events line by line.
+    Reports tool_use events via on_tool_use(tool_name, summary).
+    Returns the final result event's JSON.
+    """
     proc = await asyncio.create_subprocess_exec(
         *cli_args,
         stdin=asyncio.subprocess.PIPE,
@@ -307,10 +354,78 @@ async def _spawn_claude(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
     )
-    stdout_bytes, stderr_bytes = await proc.communicate(input=prompt.encode())
-    proc.stdout = stdout_bytes.decode() if stdout_bytes else ""
-    proc.stderr = stderr_bytes.decode() if stderr_bytes else ""
-    return proc
+
+    # Send prompt and close stdin
+    proc.stdin.write(prompt.encode())
+    await proc.stdin.drain()
+    proc.stdin.close()
+
+    result_json: dict[str, Any] | None = None
+    all_lines: list[str] = []
+
+    # Read stdout line by line for streaming events
+    while True:
+        line_bytes = await proc.stdout.readline()
+        if not line_bytes:
+            break
+        line = line_bytes.decode().strip()
+        if not line:
+            continue
+        all_lines.append(line)
+
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        event_type = event.get("type", "")
+
+        if event_type == "assistant" and on_tool_use:
+            content = event.get("message", {}).get("content", [])
+            for item in content:
+                if item.get("type") == "tool_use":
+                    tool_name = item.get("name", "unknown")
+                    tool_input = item.get("input", {})
+                    # Build a short summary of the tool call
+                    summary = _summarize_tool_call(tool_name, tool_input)
+                    on_tool_use(tool_name, summary)
+
+        elif event_type == "result":
+            result_json = event
+
+    stderr_bytes = await proc.stderr.read()
+    await proc.wait()
+
+    return ClaudeResult(
+        returncode=proc.returncode,
+        result_json=result_json,
+        stdout="\n".join(all_lines),
+        stderr=stderr_bytes.decode() if stderr_bytes else "",
+    )
+
+
+def _summarize_tool_call(tool_name: str, tool_input: dict) -> str:
+    """Build a short human-readable summary of a tool call."""
+    if tool_name in ("Read", "read_file"):
+        path = tool_input.get("file_path", tool_input.get("path", ""))
+        return path.split("/")[-1] if "/" in str(path) else str(path)
+    if tool_name in ("WebSearch", "web_search"):
+        query = tool_input.get("query", tool_input.get("search_query", ""))
+        return f'"{query}"' if query else ""
+    if tool_name in ("WebFetch", "web_fetch"):
+        url = tool_input.get("url", "")
+        return url[:60] if url else ""
+    if tool_name in ("Grep", "grep"):
+        pattern = tool_input.get("pattern", "")
+        return f'"{pattern}"' if pattern else ""
+    if tool_name in ("Glob", "glob"):
+        pattern = tool_input.get("pattern", "")
+        return pattern
+    # Fallback: show first string value
+    for v in tool_input.values():
+        if isinstance(v, str) and v:
+            return v[:40]
+    return ""
 
 
 async def run_consensus(
@@ -495,7 +610,7 @@ def _parse_proposal_reviews(raw: list[dict[str, Any]]) -> list[ProposalReview]:
     reviews = []
     for item in raw:
         reviews.append(ProposalReview(
-            original_agent=item.get("original_agent", ""),
+            original_agent=normalize_agent_name(item.get("original_agent", "")),
             edit_index=item.get("edit_index", 0),
             verdict=item.get("verdict", "APPROVE"),
             modified_replacement=item.get("modified_replacement"),
@@ -519,40 +634,35 @@ async def _run_single_proposer(
         on_progress(agent_name, "proposing")
 
     try:
-        proc = await asyncio.wait_for(
-            _spawn_claude(cli_args, propose_prompt, repo_root),
+        result = await asyncio.wait_for(
+            _spawn_claude(
+                cli_args, propose_prompt, repo_root,
+                on_tool_use=_make_tool_callback(agent_name, on_progress),
+            ),
             timeout=timeout_seconds,
         )
 
-        if proc.returncode != 0:
-            stderr_text = proc.stderr.strip() if proc.stderr else "unknown error"
+        usage = _extract_usage(result.result_json) if result.result_json else TokenUsage()
+
+        if result.returncode != 0:
+            stderr_text = result.stderr.strip() if result.stderr else "unknown error"
             return AgentProposal(
                 agent_name=agent_name,
                 edits=[],
-                summary=f"Agent process failed (exit {proc.returncode}).",
+                summary=f"Agent process failed (exit {result.returncode}).",
                 error=stderr_text[:500],
                 duration_seconds=time.monotonic() - start,
+                usage=usage,
             )
 
-        stdout = proc.stdout or ""
-        output = _extract_json(stdout)
-
-        # Extract usage from the outer CLI envelope before unwrapping
-        usage = _extract_usage(output) if output else TokenUsage()
-
-        if output and "result" in output and "edits" not in output:
-            inner = output["result"]
-            if isinstance(inner, str):
-                output = _extract_json(inner)
-            elif isinstance(inner, dict):
-                output = inner
+        output = _unwrap_result(result.result_json)
 
         if output is None:
             return AgentProposal(
                 agent_name=agent_name,
                 edits=[],
                 summary="Could not parse agent response.",
-                error=f"Unparseable output: {stdout[:300]}",
+                error=f"Unparseable output: {result.stdout[:300]}",
                 duration_seconds=time.monotonic() - start,
                 usage=usage,
             )
@@ -605,34 +715,28 @@ async def _run_single_reviewer(
         on_progress(agent_name, f"reviewing (round {round_number + 1})")
 
     try:
-        proc = await asyncio.wait_for(
-            _spawn_claude(cli_args, review_prompt, repo_root),
+        result = await asyncio.wait_for(
+            _spawn_claude(
+                cli_args, review_prompt, repo_root,
+                on_tool_use=_make_tool_callback(agent_name, on_progress),
+            ),
             timeout=timeout_seconds,
         )
 
-        if proc.returncode != 0:
-            stderr_text = proc.stderr.strip() if proc.stderr else "unknown error"
+        usage = _extract_usage(result.result_json) if result.result_json else TokenUsage()
+
+        if result.returncode != 0:
+            stderr_text = result.stderr.strip() if result.stderr else "unknown error"
             return AgentReviewResponse(
                 agent_name=agent_name,
                 all_approved=True,  # failed agent doesn't block
                 proposal_reviews=[],
-                summary=f"Agent process failed (exit {proc.returncode}).",
+                summary=f"Agent process failed (exit {result.returncode}).",
                 error=stderr_text[:500],
                 duration_seconds=time.monotonic() - start,
             )
 
-        stdout = proc.stdout or ""
-        output = _extract_json(stdout)
-
-        # Extract usage from the outer CLI envelope before unwrapping
-        usage = _extract_usage(output) if output else TokenUsage()
-
-        if output and "result" in output and "all_approved" not in output:
-            inner = output["result"]
-            if isinstance(inner, str):
-                output = _extract_json(inner)
-            elif isinstance(inner, dict):
-                output = inner
+        output = _unwrap_result(result.result_json)
 
         if output is None:
             return AgentReviewResponse(
@@ -640,7 +744,7 @@ async def _run_single_reviewer(
                 all_approved=True,  # can't parse → don't block
                 proposal_reviews=[],
                 summary="Could not parse agent response.",
-                error=f"Unparseable output: {stdout[:300]}",
+                error=f"Unparseable output: {result.stdout[:300]}",
                 duration_seconds=time.monotonic() - start,
                 usage=usage,
             )
@@ -915,35 +1019,22 @@ async def _run_single_dissenter(
         on_progress(agent_name, "dissenting")
 
     try:
-        proc = await asyncio.wait_for(
+        result = await asyncio.wait_for(
             _spawn_claude(cli_args, prompt, repo_root),
             timeout=timeout_seconds,
         )
 
-        stdout = proc.stdout or ""
-        output = _extract_json(stdout)
-
-        usage = _extract_usage(output) if output else TokenUsage()
-
-        if output and "result" in output and "opinion" not in output:
-            inner = output["result"]
-            if isinstance(inner, str):
-                # The agent might return plain text in the result field
-                parsed = _extract_json(inner)
-                if parsed and "opinion" in parsed:
-                    output = parsed
-                else:
-                    # Treat the raw string as the opinion
-                    output = {"opinion": inner}
-            elif isinstance(inner, dict):
-                output = inner
+        usage = _extract_usage(result.result_json) if result.result_json else TokenUsage()
+        output = _unwrap_result(result.result_json)
 
         opinion = ""
         if output:
             opinion = output.get("opinion", "")
-        if not opinion and stdout:
-            # Fall back to raw text
-            opinion = stdout.strip()[:500]
+        if not opinion and result.result_json:
+            # Fall back to raw result text
+            raw = result.result_json.get("result", "")
+            if isinstance(raw, str):
+                opinion = raw.strip()[:500]
 
         if on_progress:
             on_progress(agent_name, "done — dissent recorded")
@@ -1165,21 +1256,13 @@ async def _run_arbitration(
             async def _run(p=prompt, args=cli_args, ce=contested):
                 if on_progress:
                     on_progress("arbitrator", f"resolving conflict in {ce.file}")
-                start = time.monotonic()
-                proc = await asyncio.wait_for(
+                arb_start = time.monotonic()
+                arb_result = await asyncio.wait_for(
                     _spawn_claude(args, p, repo_root),
                     timeout=config.general.timeout_seconds,
                 )
-                stdout = proc.stdout or ""
-                output = _extract_json(stdout)
-                usage = _extract_usage(output) if output else TokenUsage()
-
-                if output and "result" in output and "replacement_text" not in output:
-                    inner = output["result"]
-                    if isinstance(inner, str):
-                        output = _extract_json(inner)
-                    elif isinstance(inner, dict):
-                        output = inner
+                usage = _extract_usage(arb_result.result_json) if arb_result.result_json else TokenUsage()
+                output = _unwrap_result(arb_result.result_json)
 
                 replacement = ""
                 rationale = ""
@@ -1299,6 +1382,7 @@ async def run_iteration_loop(
     rounds: list[IterationRound] = []
     current_proposals = proposals
     consensus = False
+    stalled = False
 
     # Track the best (highest approval) proposals seen
     best_proposals = current_proposals
@@ -1377,6 +1461,7 @@ async def run_iteration_loop(
                 continue
 
             # No contested edits found but still stalled — exit early
+            stalled = True
             break
 
         # Merge modifications for next round
@@ -1427,4 +1512,5 @@ async def run_iteration_loop(
         dissents=dissents,
         best_round=best_round,
         best_approvals=best_approvals,
+        stalled=stalled,
     )

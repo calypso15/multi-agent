@@ -27,8 +27,8 @@ class GeneralConfig:
     max_canon_size_kb: int = 500
     max_rounds: int = 3
     min_severity: str = "minor"
-    propose_max_turns: int = 1
-    review_max_turns: int = 1
+    propose_max_turns: int = 3
+    review_max_turns: int = 2
 
 
 @dataclass

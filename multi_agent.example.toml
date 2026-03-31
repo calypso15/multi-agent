@@ -26,12 +26,12 @@ max_rounds = 3
 # Set to "major" to skip minor/stylistic nitpicks and focus on real issues
 min_severity = "minor"
 
-# Maximum turns per agent in the propose phase (1 is enough without tools;
-# increase if agents have allowed_tools like WebSearch)
-propose_max_turns = 1
+# Maximum turns per agent in the propose phase
+# Agents use Read to explore canon files, so need at least 2-3 turns
+propose_max_turns = 3
 
 # Maximum turns per agent in review rounds
-review_max_turns = 1
+review_max_turns = 2
 
 # Each agent section can override model or provide a custom system prompt.
 # Disable an agent by setting enabled = false.

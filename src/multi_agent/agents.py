@@ -78,9 +78,9 @@ after all), but flag anything that crosses into fantasy or handwavium. If alien 
 technology exceeds human understanding, it should still be presented as operating \
 within physical laws — just ones we don't fully grasp yet.
 
-When reviewing, actively check claims against real physics and biology. All established \
-canon is provided inline for cross-reference. If web search is available, use it to \
-verify specific scientific claims, physical constants, or technical feasibility.
+When reviewing, actively check claims against real physics and biology. Use the Read \
+tool to examine canon files relevant to your review. If web search is available, use \
+it to verify specific scientific claims, physical constants, or technical feasibility.
 
 APPROVE if no critical or major scientific issues exist.
 REQUEST_CHANGES if any claim contradicts known physics without justification, \
@@ -111,8 +111,9 @@ described. No retroactive changes without explicit acknowledgment.
 - Naming conventions: Consistent spelling and naming for alien species, technology, \
 organizations, and places.
 
-Cross-reference the new content against the established canon provided inline. \
-Search for character names, dates, locations, and key terms to verify consistency.
+Cross-reference the new content against established canon files. Use the Read tool \
+to examine canon files, searching for character names, dates, locations, and key \
+terms to verify consistency.
 
 If no prior canon exists, focus on internal \
 consistency within the submitted content itself.
@@ -149,9 +150,9 @@ and corporations don't pivot overnight. Bureaucratic reality matters.
 - Power dynamics: Who gains and who loses from First Contact? Consider existing \
 geopolitical tensions, inequality, and how alien contact reshapes the balance of power.
 
-Check how societal dynamics have been established in the canon provided inline. \
-If web search is available, use it to verify claims about real-world institutions, \
-geopolitics, historical precedents, or cultural practices.
+Use the Read tool to examine canon files for how societal dynamics have been \
+established. If web search is available, use it to verify claims about real-world \
+institutions, geopolitics, historical precedents, or cultural practices.
 
 APPROVE if the societal and political elements are realistic and consistent.
 REQUEST_CHANGES if characters, institutions, or populations behave in ways that \
@@ -169,6 +170,19 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
     "canon_continuity": "Canon Continuity",
     "sociopolitical": "Sociopolitical",
 }
+
+# Reverse lookup: display name → key name, plus identity mappings
+AGENT_NAME_LOOKUP: dict[str, str] = {}
+for _key, _display in AGENT_DISPLAY_NAMES.items():
+    AGENT_NAME_LOOKUP[_key] = _key
+    AGENT_NAME_LOOKUP[_display] = _key
+    AGENT_NAME_LOOKUP[_display.lower()] = _key
+    AGENT_NAME_LOOKUP[_key.replace("_", " ")] = _key
+
+
+def normalize_agent_name(name: str) -> str:
+    """Map any variant of an agent name back to its key name."""
+    return AGENT_NAME_LOOKUP.get(name, AGENT_NAME_LOOKUP.get(name.lower(), name))
 
 
 # --- Proposal / Review schemas and prompts for the iterate loop ---
@@ -453,7 +467,7 @@ def build_agent_system_prompt(
     return base + suffix
 
 
-_ALL_TOOLS = "Bash,Read,Glob,Grep,Edit,Write,Agent,Skill,ToolSearch"
+_ALL_TOOLS = {"Bash", "Read", "Glob", "Grep", "Edit", "Write", "Agent", "Skill", "ToolSearch"}
 
 
 def build_cli_args(
@@ -468,17 +482,20 @@ def build_cli_args(
     args = [
         "claude",
         "--print",                       # Non-interactive, print result
-        "--output-format", "json",       # Get structured JSON output
+        "--output-format", "stream-json", # Stream JSON events for tool visibility
+        "--verbose",                     # Required for stream-json with --print
         "--max-turns", str(max_turns),
         "--system-prompt", system_prompt,
         "--permission-mode", "bypassPermissions",
     ]
 
-    if allowed_tools:
-        args.extend(["--allowedTools", ",".join(allowed_tools)])
-    else:
-        # Disable all tools so agents respond from inline context only
-        args.extend(["--disallowedTools", _ALL_TOOLS])
+    # Read is always available so agents can explore canon files.
+    # All other tools are disabled unless explicitly in allowed_tools.
+    effective_tools = {"Read"} | set(allowed_tools or [])
+    disallowed = _ALL_TOOLS - effective_tools
+    if disallowed:
+        args.extend(["--disallowedTools", ",".join(sorted(disallowed))])
+    args.extend(["--allowedTools", ",".join(sorted(effective_tools))])
 
     if model:
         args.extend(["--model", model])
