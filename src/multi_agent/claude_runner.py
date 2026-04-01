@@ -47,6 +47,33 @@ def _make_tool_callback(
     return callback
 
 
+_DRAFTING_INTERVAL = 3.0  # seconds between drafting progress updates
+
+
+def _make_drafting_callback(
+    agent_name: str,
+    on_progress: Callable[[str, str], None] | None,
+) -> Callable[[int], None] | None:
+    """Wrap on_progress to report text generation progress, throttled."""
+    if not on_progress:
+        return None
+
+    last_report = [0.0]  # mutable for closure
+
+    def callback(chars: int):
+        now = time.monotonic()
+        if now - last_report[0] < _DRAFTING_INTERVAL:
+            return
+        last_report[0] = now
+        if chars < 1024:
+            size = f"{chars} chars"
+        else:
+            size = f"{chars / 1024:.1f}K chars"
+        on_progress(agent_name, f"  \u270e drafting ({size})")
+
+    return callback
+
+
 def _summarize_tool_call(tool_name: str, tool_input: dict) -> str:
     """Build a short human-readable summary of a tool call."""
     if tool_name in ("Read", "read_file"):
@@ -85,11 +112,13 @@ async def _drive_process(
     proc: asyncio.subprocess.Process,
     prompt: str,
     on_tool_use: Callable[[str, str], None] | None = None,
+    on_drafting: Callable[[int], None] | None = None,
 ) -> ClaudeResult:
     """Drive an already-created subprocess: send prompt, stream events, return result.
 
     Reads stdout line-by-line for stream-json events. Reports tool_use events
-    via on_tool_use(tool_name, summary). Returns the final result event's JSON.
+    via on_tool_use(tool_name, summary). Reports text generation progress via
+    on_drafting(chars_so_far). Returns the final result event's JSON.
     """
     proc.stdin.write(prompt.encode())
     await proc.stdin.drain()
@@ -98,6 +127,7 @@ async def _drive_process(
     result_json: dict[str, Any] | None = None
     all_lines: list[str] = []
     seen_tool_ids: set[str] = set()
+    draft_chars = 0  # characters generated in current text block
 
     while True:
         line_bytes = await proc.stdout.readline()
@@ -131,6 +161,17 @@ async def _drive_process(
                     tool_input = item.get("input", {})
                     summary = _summarize_tool_call(tool_name, tool_input)
                     on_tool_use(tool_name, summary)
+
+        elif event_type == "stream_event" and on_drafting:
+            inner = event.get("event", {})
+            inner_type = inner.get("type", "")
+            if inner_type == "content_block_start":
+                draft_chars = 0
+            elif inner_type == "content_block_delta":
+                delta = inner.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    draft_chars += len(delta.get("text", ""))
+                    on_drafting(draft_chars)
 
         elif event_type == "result":
             result_json = event
@@ -314,6 +355,7 @@ async def run_agent(
             _drive_process(
                 proc, prompt,
                 on_tool_use=_make_tool_callback(agent_name, on_progress) if report_tool_use else None,
+                on_drafting=_make_drafting_callback(agent_name, on_progress) if report_tool_use else None,
             ),
             timeout=timeout_seconds,
         )

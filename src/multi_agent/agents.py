@@ -447,6 +447,7 @@ def build_cli_args(
         "--print",                       # Non-interactive, print result
         "--output-format", "stream-json", # Stream JSON events for tool visibility
         "--verbose",                     # Required for stream-json with --print
+        "--include-partial-messages",    # Stream deltas for progress reporting
     ]
 
     if max_turns > 0:
