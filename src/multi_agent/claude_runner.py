@@ -47,29 +47,30 @@ def _make_tool_callback(
     return callback
 
 
-_DRAFTING_INTERVAL = 3.0  # seconds between drafting progress updates
-
-
 def _make_drafting_callback(
     agent_name: str,
     on_progress: Callable[[str, str], None] | None,
 ) -> Callable[[int], None] | None:
-    """Wrap on_progress to report text generation progress, throttled."""
+    """Wrap on_progress to report once per turn when text generation begins.
+
+    Reports "drafting" on the first text delta of each content block.
+    Resets when a new content block starts, so multi-turn agents
+    (tool call → draft → tool call → draft) get one report per turn.
+    """
     if not on_progress:
         return None
 
-    last_report = [0.0]  # mutable for closure
+    state = {"reported": False}
 
     def callback(chars: int):
-        now = time.monotonic()
-        if now - last_report[0] < _DRAFTING_INTERVAL:
+        if chars == 0:
+            # content_block_start resets chars to 0 — new turn
+            state["reported"] = False
             return
-        last_report[0] = now
-        if chars < 1024:
-            size = f"{chars} chars"
-        else:
-            size = f"{chars / 1024:.1f}K chars"
-        on_progress(agent_name, f"  \u270e drafting ({size})")
+        if state["reported"]:
+            return
+        state["reported"] = True
+        on_progress(agent_name, "  \u270e drafting")
 
     return callback
 
@@ -167,6 +168,8 @@ async def _drive_process(
             inner_type = inner.get("type", "")
             if inner_type == "content_block_start":
                 draft_chars = 0
+                if on_drafting:
+                    on_drafting(0)  # signal new block for per-turn reset
             elif inner_type == "content_block_delta":
                 delta = inner.get("delta", {})
                 if delta.get("type") == "text_delta":
