@@ -378,6 +378,60 @@ async def run_propose_phase(
     return list(results.values())
 
 
+def _last_modifiers(
+    reviews: list[AgentReviewResponse],
+) -> dict[tuple[str, int], str]:
+    """Identify who last modified each edit in a review round.
+
+    When multiple reviewers modify the same edit, the last one in
+    iteration order wins (matching merge_proposals behavior).
+    Returns {(original_agent, edit_index): modifier_agent_name}.
+    """
+    last: dict[tuple[str, int], str] = {}
+    for review in reviews:
+        for pr in review.proposal_reviews:
+            if pr.verdict == "MODIFY" and pr.modified_replacement is not None:
+                last[(pr.original_agent, pr.edit_index)] = review.agent_name
+    return last
+
+
+def _filter_self_modified_edits(
+    proposals: list[AgentProposal],
+    agent_name: str,
+    previous_reviews: list[AgentReviewResponse],
+) -> list[AgentProposal]:
+    """Return proposals with edits this agent last modified removed.
+
+    After merge_proposals, an edit may contain text written by a reviewing
+    agent rather than the original proposer.  There is no point in asking
+    that reviewer to re-review their own text, so we strip those edits
+    from the prompt they receive.
+    """
+    last_mods = _last_modifiers(previous_reviews)
+    skip = {
+        key for key, modifier in last_mods.items()
+        if modifier == agent_name
+    }
+    if not skip:
+        return proposals
+
+    filtered = []
+    for proposal in proposals:
+        kept = [
+            e for i, e in enumerate(proposal.edits)
+            if (proposal.agent_name, i) not in skip
+        ]
+        filtered.append(AgentProposal(
+            agent_name=proposal.agent_name,
+            edits=kept,
+            summary=proposal.summary,
+            duration_seconds=proposal.duration_seconds,
+            error=proposal.error,
+            usage=proposal.usage,
+        ))
+    return filtered
+
+
 async def run_review_phase(
     config: MultiAgentConfig,
     proposals: list[AgentProposal],
@@ -386,10 +440,13 @@ async def run_review_phase(
     repo_root: str,
     round_number: int,
     on_progress: Callable[[str, str], None] | None = None,
+    previous_reviews: list[AgentReviewResponse] | None = None,
 ) -> list[AgentReviewResponse]:
     """Run all enabled agents in review mode (parallel).
 
     Each agent only reviews proposals from OTHER agents -- not its own.
+    Additionally, edits an agent last modified in the previous round are
+    excluded from their review prompt (they already approved their version).
     """
     reviews: list[AgentReviewResponse] = []
     coros: dict[str, asyncio.coroutines] = {}
@@ -398,6 +455,13 @@ async def run_review_phase(
         if not agent_cfg.enabled:
             continue
         other_proposals = [p for p in proposals if p.agent_name != name]
+
+        # Also strip edits this agent was the last to modify
+        if previous_reviews:
+            other_proposals = _filter_self_modified_edits(
+                other_proposals, name, previous_reviews,
+            )
+
         if not any(p.edits for p in other_proposals):
             reviews.append(AgentReviewResponse(
                 agent_name=name,
@@ -785,10 +849,13 @@ async def run_iteration_loop(
     best_approvals = 0
     best_round = -1
 
+    previous_reviews: list[AgentReviewResponse] | None = None
+
     for round_num in range(config.general.max_rounds):
         reviews = await run_review_phase(
             config, current_proposals, file_contents, canon,
             repo_root, round_num, on_progress,
+            previous_reviews=previous_reviews,
         )
         for r in reviews:
             total_usage += r.usage
@@ -868,6 +935,9 @@ async def run_iteration_loop(
             # No contested edits found but still stalled -- exit early
             stalled = True
             break
+
+        # Track reviews for next round's self-modification filtering
+        previous_reviews = reviews
 
         # Merge modifications for next round (locked regions are protected)
         current_proposals = merge_proposals(

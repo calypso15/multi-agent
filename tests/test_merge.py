@@ -8,6 +8,7 @@ from multi_agent.models import (
 )
 from multi_agent.consensus import (
     _edit_overlaps_locked,
+    _filter_self_modified_edits,
     deduplicate_edits,
     merge_proposals,
 )
@@ -369,3 +370,113 @@ class TestDeduplicateEdits:
         kept, dropped = deduplicate_edits(edits)
         assert len(kept) == 2
         assert len(dropped) == 0
+
+
+# --- _filter_self_modified_edits ---
+
+
+class TestFilterSelfModifiedEdits:
+    """Agents should not re-review edits they last modified."""
+
+    def _proposals(self):
+        return [
+            AgentProposal(agent_name="socio", edits=[
+                FileEdit("f.md", "aaa", "bbb", "edit 0"),
+                FileEdit("f.md", "ccc", "ddd", "edit 1"),
+                FileEdit("f.md", "eee", "fff", "edit 2"),
+            ], summary=""),
+            AgentProposal(agent_name="canon", edits=[
+                FileEdit("f.md", "ggg", "hhh", "edit 0"),
+            ], summary=""),
+        ]
+
+    def test_self_modified_edit_excluded(self):
+        """sci modified socio's edit 1 → sci should not see it next round."""
+        prev_reviews = [
+            AgentReviewResponse(
+                agent_name="sci", all_approved=False,
+                proposal_reviews=[
+                    ProposalReview(original_agent="socio", edit_index=1,
+                                   verdict="MODIFY", modified_replacement="new", rationale=""),
+                ],
+                summary="",
+            ),
+        ]
+        filtered = _filter_self_modified_edits(
+            self._proposals(), "sci", prev_reviews,
+        )
+        socio = next(p for p in filtered if p.agent_name == "socio")
+        # edit 0 and edit 2 survive, edit 1 is removed
+        assert len(socio.edits) == 2
+        assert socio.edits[0].original_text == "aaa"
+        assert socio.edits[1].original_text == "eee"
+
+    def test_other_agents_still_see_edit(self):
+        """canon should still see the edit sci modified."""
+        prev_reviews = [
+            AgentReviewResponse(
+                agent_name="sci", all_approved=False,
+                proposal_reviews=[
+                    ProposalReview(original_agent="socio", edit_index=1,
+                                   verdict="MODIFY", modified_replacement="new", rationale=""),
+                ],
+                summary="",
+            ),
+        ]
+        filtered = _filter_self_modified_edits(
+            self._proposals(), "canon", prev_reviews,
+        )
+        socio = next(p for p in filtered if p.agent_name == "socio")
+        assert len(socio.edits) == 3  # all edits visible
+
+    def test_later_modifier_wins(self):
+        """If canon modified AFTER sci, sci should still see the edit."""
+        prev_reviews = [
+            AgentReviewResponse(
+                agent_name="sci", all_approved=False,
+                proposal_reviews=[
+                    ProposalReview(original_agent="socio", edit_index=1,
+                                   verdict="MODIFY", modified_replacement="sci ver", rationale=""),
+                ],
+                summary="",
+            ),
+            AgentReviewResponse(
+                agent_name="canon", all_approved=False,
+                proposal_reviews=[
+                    ProposalReview(original_agent="socio", edit_index=1,
+                                   verdict="MODIFY", modified_replacement="canon ver", rationale=""),
+                ],
+                summary="",
+            ),
+        ]
+        filtered = _filter_self_modified_edits(
+            self._proposals(), "sci", prev_reviews,
+        )
+        socio = next(p for p in filtered if p.agent_name == "socio")
+        # canon was last modifier → sci should review it
+        assert len(socio.edits) == 3
+
+    def test_no_previous_reviews_no_filter(self):
+        """First round — no filtering needed."""
+        filtered = _filter_self_modified_edits(
+            self._proposals(), "sci", [],
+        )
+        socio = next(p for p in filtered if p.agent_name == "socio")
+        assert len(socio.edits) == 3
+
+    def test_does_not_mutate_originals(self):
+        """Filtering should return copies, not mutate the input proposals."""
+        proposals = self._proposals()
+        prev_reviews = [
+            AgentReviewResponse(
+                agent_name="sci", all_approved=False,
+                proposal_reviews=[
+                    ProposalReview(original_agent="socio", edit_index=1,
+                                   verdict="MODIFY", modified_replacement="new", rationale=""),
+                ],
+                summary="",
+            ),
+        ]
+        _filter_self_modified_edits(proposals, "sci", prev_reviews)
+        # Original should be untouched
+        assert len(proposals[0].edits) == 3
