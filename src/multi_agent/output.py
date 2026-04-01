@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING, Sequence, Union
 
 from rich.console import Console
 from rich.panel import Panel
@@ -12,6 +13,16 @@ from rich.table import Table
 from rich.text import Text
 
 from multi_agent.agents import AGENT_DISPLAY_NAMES
+
+if TYPE_CHECKING:
+    from multi_agent.models import (
+        AgentProposal,
+        AgentReviewResponse,
+        ArbitrationResult,
+        ContestedEdit,
+        Dissent,
+        TokenUsage,
+    )
 
 AGENT_COLORS: dict[str, str] = {
     "scientific_rigor": "cyan",
@@ -23,16 +34,20 @@ AGENT_COLORS: dict[str, str] = {
 def _agent_style(agent_name: str) -> str:
     """Get the color style for an agent."""
     return AGENT_COLORS.get(agent_name, "white")
-from multi_agent.consensus import (
-    AgentProposal,
-    AgentReviewResponse,
-    ArbitrationResult,
-    ContestedEdit,
-    Dissent,
-    TokenUsage,
-)
+
 
 console = Console(stderr=True)
+
+
+def _print_errors(
+    items: Sequence[Union[AgentProposal, AgentReviewResponse]],
+) -> None:
+    """Print error details for any agents that failed."""
+    for item in items:
+        if item.error:
+            display = AGENT_DISPLAY_NAMES.get(item.agent_name, item.agent_name)
+            color = _agent_style(item.agent_name)
+            console.print(f"\n  [{color}]{display} error:[/{color}] [red]{item.error}[/red]")
 
 
 def print_header(
@@ -132,12 +147,7 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
         rows.append((display, proposal.agent_name, status, proposal.duration_seconds))
 
     console.print(_agent_table(rows))
-
-    for proposal in proposals:
-        if proposal.error:
-            display = AGENT_DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
-            color = _agent_style(proposal.agent_name)
-            console.print(f"\n  [{color}]{display} error:[/{color}] [red]{proposal.error}[/red]")
+    _print_errors(proposals)
 
     total_edits = sum(len(p.edits) for p in proposals)
     console.print(
@@ -151,7 +161,9 @@ def print_review_round(
     consensus_threshold: int,
 ) -> None:
     """Print the results of a review round."""
-    approvals = sum(1 for r in reviews if r.all_approved and r.error is None)
+    from multi_agent.models import count_approvals
+
+    approvals = count_approvals(reviews)
     total = len(reviews)
     reached = approvals >= consensus_threshold
 
@@ -182,13 +194,7 @@ def print_review_round(
         rows.append((display, review.agent_name, status_text, review.duration_seconds))
 
     console.print(_agent_table(rows))
-
-    # Show error details
-    for review in reviews:
-        if review.error:
-            display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
-            color = _agent_style(review.agent_name)
-            console.print(f"\n  [{color}]{display} error:[/{color}] [red]{review.error}[/red]")
+    _print_errors(reviews)
 
     # Show modification details when not all approved
     for review in reviews:

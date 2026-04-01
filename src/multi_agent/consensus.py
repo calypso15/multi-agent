@@ -1,20 +1,18 @@
-"""Parallel agent execution, vote tallying, and error handling."""
+"""Propose-review-iterate orchestration loop."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from multi_agent.agents import (
     ARBITRATOR_PROMPT,
     build_agent_system_prompt,
     build_cli_args,
-    normalize_agent_name,
 )
+from multi_agent.claude_runner import run_agent
 from multi_agent.config import MultiAgentConfig
 from multi_agent.context import (
     build_propose_prompt,
@@ -24,320 +22,50 @@ from multi_agent.context import (
     get_staged_files,
     load_canon,
 )
+from multi_agent.models import (
+    AgentProposal,
+    AgentReviewResponse,
+    ArbitrationDone,
+    ArbitrationResult,
+    ArbitrationStart,
+    ContestedEdit,
+    Dissent,
+    DissentsDone,
+    FileEdit,
+    IterationResult,
+    IterationRound,
+    PhaseEvent,
+    ProposalReview,
+    ProposeDone,
+    ReviewDone,
+    TokenUsage,
+    count_approvals,
+    parse_edits,
+    parse_proposal_reviews,
+)
+
+# Re-exports so existing importers (tests, output, cli) continue to work.
+__all__ = [
+    "AgentProposal",
+    "AgentReviewResponse",
+    "ArbitrationResult",
+    "ContestedEdit",
+    "Dissent",
+    "FileEdit",
+    "IterationResult",
+    "IterationRound",
+    "PhaseEvent",
+    "ProposalReview",
+    "TokenUsage",
+    "count_approvals",
+    "merge_proposals",
+    "resolve_file_args",
+    "run_iteration_loop",
+    "_edit_overlaps_locked",
+]
 
 
-# --- Dataclasses for the propose-review-iterate loop ---
-
-
-@dataclass
-class TokenUsage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    cost_usd: float = 0.0
-
-    def __iadd__(self, other: TokenUsage) -> TokenUsage:
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
-        self.cache_read_input_tokens += other.cache_read_input_tokens
-        self.cache_creation_input_tokens += other.cache_creation_input_tokens
-        self.cost_usd += other.cost_usd
-        return self
-
-
-def _extract_usage(outer: dict[str, Any]) -> TokenUsage:
-    """Extract token usage from the claude CLI JSON envelope."""
-    usage = outer.get("usage", {})
-    return TokenUsage(
-        input_tokens=usage.get("input_tokens", 0),
-        output_tokens=usage.get("output_tokens", 0),
-        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
-        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
-        cost_usd=outer.get("total_cost_usd", 0.0),
-    )
-
-
-@dataclass
-class FileEdit:
-    file: str
-    original_text: str
-    replacement_text: str
-    rationale: str
-
-
-@dataclass
-class AgentProposal:
-    agent_name: str
-    edits: list[FileEdit]
-    summary: str
-    duration_seconds: float = 0.0
-    error: str | None = None
-    usage: TokenUsage = field(default_factory=TokenUsage)
-
-
-@dataclass
-class ProposalReview:
-    original_agent: str
-    edit_index: int
-    verdict: str  # "APPROVE" or "MODIFY"
-    modified_replacement: str | None = None
-    rationale: str = ""
-
-
-@dataclass
-class AgentReviewResponse:
-    agent_name: str
-    all_approved: bool
-    proposal_reviews: list[ProposalReview]
-    summary: str
-    duration_seconds: float = 0.0
-    error: str | None = None
-    usage: TokenUsage = field(default_factory=TokenUsage)
-
-
-@dataclass
-class IterationRound:
-    round_number: int
-    reviews: list[AgentReviewResponse]
-    consensus_reached: bool
-
-
-@dataclass
-class Dissent:
-    agent_name: str
-    opinion: str
-    duration_seconds: float = 0.0
-    usage: TokenUsage = field(default_factory=TokenUsage)
-
-
-@dataclass
-class IterationResult:
-    consensus_reached: bool
-    final_edits: list[FileEdit]
-    proposals: list[AgentProposal]
-    rounds: list[IterationRound]
-    total_duration_seconds: float
-    files_reviewed: list[str]
-    merged_texts: dict[str, str] = field(default_factory=dict)
-    total_usage: TokenUsage = field(default_factory=TokenUsage)
-    dissents: list[Dissent] = field(default_factory=list)
-    best_round: int = -1
-    best_approvals: int = 0
-    stalled: bool = False
-
-
-def _extract_json(text: str) -> dict[str, Any] | None:
-    """Extract a JSON object from text, handling markdown code fences."""
-    text = text.strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Try extracting from markdown code fence
-    for marker in ("```json", "```"):
-        if marker in text:
-            start = text.index(marker) + len(marker)
-            end = text.index("```", start)
-            try:
-                return json.loads(text[start:end].strip())
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-    # Try finding first { ... } block, respecting JSON string boundaries
-    brace_start = text.find("{")
-    if brace_start >= 0:
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(brace_start, len(text)):
-            c = text[i]
-            if escape:
-                escape = False
-                continue
-            if c == '\\' and in_string:
-                escape = True
-                continue
-            if c == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if c == '{':
-                depth += 1
-            elif c == '}':
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[brace_start:i + 1])
-                    except json.JSONDecodeError:
-                        break
-
-    return None
-
-
-def _unwrap_result(result_json: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Extract the agent's JSON response from the claude CLI result envelope.
-
-    The stream-json result event has a "result" field containing the agent's
-    text output, which itself should be JSON.
-    """
-    if result_json is None:
-        return None
-
-    # The result_json is the final "type": "result" event
-    inner = result_json.get("result")
-    if inner is None:
-        return None
-
-    if isinstance(inner, dict):
-        return inner
-
-    if isinstance(inner, str):
-        return _extract_json(inner)
-
-    return None
-
-
-def _make_tool_callback(
-    agent_name: str,
-    on_progress: Callable[[str, str], None] | None,
-) -> Callable[[str, str], None] | None:
-    """Wrap on_progress to format tool-use events for an agent."""
-    if not on_progress:
-        return None
-
-    def callback(tool_name: str, summary: str):
-        detail = f" {summary}" if summary else ""
-        on_progress(agent_name, f"  → {tool_name}{detail}")
-
-    return callback
-
-
-@dataclass
-class ClaudeResult:
-    """Parsed result from a claude CLI invocation."""
-    returncode: int
-    result_json: dict[str, Any] | None
-    stdout: str
-    stderr: str
-
-
-async def _spawn_claude(
-    cli_args: list[str],
-    prompt: str,
-    cwd: str,
-    on_tool_use: Callable[[str, str], None] | None = None,
-) -> ClaudeResult:
-    """Spawn a claude CLI process, stream events, and return the result.
-
-    With --output-format stream-json, reads events line by line.
-    Reports tool_use events via on_tool_use(tool_name, summary).
-    Returns the final result event's JSON.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        *cli_args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        limit=10 * 1024 * 1024,  # 10 MB — stream-json lines can be large
-    )
-
-    # Send prompt and close stdin
-    proc.stdin.write(prompt.encode())
-    await proc.stdin.drain()
-    proc.stdin.close()
-
-    result_json: dict[str, Any] | None = None
-    all_lines: list[str] = []
-    seen_tool_ids: set[str] = set()
-
-    # Read stdout line by line for streaming events
-    while True:
-        line_bytes = await proc.stdout.readline()
-        if not line_bytes:
-            break
-        line = line_bytes.decode().strip()
-        if not line:
-            continue
-        all_lines.append(line)
-
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        event_type = event.get("type", "")
-
-        if event_type == "assistant" and on_tool_use:
-            # assistant events contain cumulative content — only report new tool calls
-            content = event.get("message", {}).get("content", [])
-            for item in content:
-                if item.get("type") == "tool_use":
-                    tool_id = item.get("id")
-                    if tool_id is None:
-                        # No ID on this block — use (name, input) as a fallback key
-                        tool_name = item.get("name", "unknown")
-                        tool_input = item.get("input", {})
-                        tool_id = f"{tool_name}:{json.dumps(tool_input, sort_keys=True)}"
-                    if tool_id in seen_tool_ids:
-                        continue
-                    seen_tool_ids.add(tool_id)
-                    tool_name = item.get("name", "unknown")
-                    tool_input = item.get("input", {})
-                    summary = _summarize_tool_call(tool_name, tool_input)
-                    on_tool_use(tool_name, summary)
-
-        elif event_type == "result":
-            result_json = event
-
-    stderr_bytes = await proc.stderr.read()
-    await proc.wait()
-
-    return ClaudeResult(
-        returncode=proc.returncode,
-        result_json=result_json,
-        stdout="\n".join(all_lines),
-        stderr=stderr_bytes.decode() if stderr_bytes else "",
-    )
-
-
-def _summarize_tool_call(tool_name: str, tool_input: dict) -> str:
-    """Build a short human-readable summary of a tool call."""
-    if tool_name in ("Read", "read_file"):
-        path = tool_input.get("file_path", tool_input.get("path", ""))
-        name = path.split("/")[-1] if "/" in str(path) else str(path)
-        offset = tool_input.get("offset")
-        limit = tool_input.get("limit")
-        if offset or limit:
-            parts = []
-            if offset:
-                parts.append(f"offset={offset}")
-            if limit:
-                parts.append(f"limit={limit}")
-            name += f" ({', '.join(parts)})"
-        return name
-    if tool_name in ("WebSearch", "web_search"):
-        query = tool_input.get("query", tool_input.get("search_query", ""))
-        return f'"{query}"' if query else ""
-    if tool_name in ("WebFetch", "web_fetch"):
-        url = tool_input.get("url", "")
-        return url[:60] if url else ""
-    if tool_name in ("Grep", "grep"):
-        pattern = tool_input.get("pattern", "")
-        return f'"{pattern}"' if pattern else ""
-    if tool_name in ("Glob", "glob"):
-        pattern = tool_input.get("pattern", "")
-        return pattern
-    # Fallback: show first string value
-    for v in tool_input.values():
-        if isinstance(v, str) and v:
-            return v[:40]
-    return ""
+# --- File resolution ---
 
 
 def resolve_file_args(
@@ -366,180 +94,7 @@ def resolve_file_args(
     return [str(p.relative_to(repo_root)) for p in resolved]
 
 
-# --- Propose-Review-Iterate loop ---
-
-
-def _parse_edits(raw_edits: list[dict[str, Any]]) -> list[FileEdit]:
-    """Parse edit dicts into FileEdit objects."""
-    edits = []
-    for item in raw_edits:
-        edits.append(FileEdit(
-            file=item.get("file", ""),
-            original_text=item.get("original_text", ""),
-            replacement_text=item.get("replacement_text", ""),
-            rationale=item.get("rationale", ""),
-        ))
-    return edits
-
-
-def _parse_proposal_reviews(raw: list[dict[str, Any]]) -> list[ProposalReview]:
-    """Parse proposal review dicts into ProposalReview objects."""
-    reviews = []
-    for item in raw:
-        reviews.append(ProposalReview(
-            original_agent=normalize_agent_name(item.get("original_agent", "")),
-            edit_index=item.get("edit_index", 0),
-            verdict=item.get("verdict", "APPROVE"),
-            modified_replacement=item.get("modified_replacement"),
-            rationale=item.get("rationale", ""),
-        ))
-    return reviews
-
-
-@dataclass
-class _AgentResult:
-    """Raw result from spawning an agent."""
-    output: dict[str, Any] | None
-    usage: TokenUsage
-    duration_seconds: float
-    error: str | None = None
-
-
-async def _run_agent(
-    agent_name: str,
-    prompt: str,
-    cli_args: list[str],
-    repo_root: str,
-    timeout_seconds: int,
-    on_progress: Callable[[str, str], None] | None = None,
-    progress_label: str = "running",
-    report_tool_use: bool = True,
-) -> _AgentResult:
-    """Spawn a claude CLI agent and return the parsed result or error.
-
-    Common boilerplate for propose, review, and dissent phases.
-    """
-    start = time.monotonic()
-
-    if on_progress:
-        on_progress(agent_name, progress_label)
-
-    try:
-        result = await asyncio.wait_for(
-            _spawn_claude(
-                cli_args, prompt, repo_root,
-                on_tool_use=_make_tool_callback(agent_name, on_progress) if report_tool_use else None,
-            ),
-            timeout=timeout_seconds,
-        )
-
-        usage = _extract_usage(result.result_json) if result.result_json else TokenUsage()
-
-        if result.returncode != 0:
-            stderr_text = result.stderr.strip() if result.stderr else "unknown error"
-            return _AgentResult(
-                output=None, usage=usage,
-                duration_seconds=time.monotonic() - start,
-                error=stderr_text[:500],
-            )
-
-        output = _unwrap_result(result.result_json)
-        if output is None:
-            return _AgentResult(
-                output=None, usage=usage,
-                duration_seconds=time.monotonic() - start,
-                error=f"Unparseable output: {result.stdout[:300]}",
-            )
-
-        return _AgentResult(
-            output=output, usage=usage,
-            duration_seconds=time.monotonic() - start,
-        )
-
-    except asyncio.TimeoutError:
-        return _AgentResult(
-            output=None, usage=TokenUsage(),
-            duration_seconds=time.monotonic() - start,
-            error=f"Timed out after {timeout_seconds}s",
-        )
-    except Exception as exc:
-        return _AgentResult(
-            output=None, usage=TokenUsage(),
-            duration_seconds=time.monotonic() - start,
-            error=str(exc),
-        )
-
-
-async def _run_single_proposer(
-    agent_name: str,
-    propose_prompt: str,
-    cli_args: list[str],
-    repo_root: str,
-    timeout_seconds: int,
-    on_progress: Callable[[str, str], None] | None = None,
-) -> AgentProposal:
-    """Run a single agent in propose mode."""
-    raw = await _run_agent(
-        agent_name, propose_prompt, cli_args, repo_root,
-        timeout_seconds, on_progress, progress_label="proposing",
-    )
-    if raw.error:
-        return AgentProposal(
-            agent_name=agent_name, edits=[], summary="Agent failed.",
-            error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
-        )
-
-    edits = _parse_edits(raw.output.get("edits", []))
-    if on_progress:
-        on_progress(agent_name, f"done — {len(edits)} edit(s)")
-
-    return AgentProposal(
-        agent_name=agent_name, edits=edits,
-        summary=raw.output.get("summary", ""),
-        duration_seconds=raw.duration_seconds, usage=raw.usage,
-    )
-
-
-async def _run_single_reviewer(
-    agent_name: str,
-    review_prompt: str,
-    cli_args: list[str],
-    repo_root: str,
-    timeout_seconds: int,
-    round_number: int,
-    on_progress: Callable[[str, str], None] | None = None,
-) -> AgentReviewResponse:
-    """Run a single agent in review mode."""
-    raw = await _run_agent(
-        agent_name, review_prompt, cli_args, repo_root,
-        timeout_seconds, on_progress,
-        progress_label=f"reviewing (round {round_number + 1})",
-    )
-    if raw.error:
-        return AgentReviewResponse(
-            agent_name=agent_name, all_approved=True,  # failed agent doesn't block
-            proposal_reviews=[], summary="Agent failed.",
-            error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
-        )
-
-    all_approved = raw.output.get("all_approved", True)
-    proposal_reviews = _parse_proposal_reviews(
-        raw.output.get("proposal_reviews", [])
-    )
-
-    if on_progress:
-        if all_approved:
-            on_progress(agent_name, f"done — approved all (round {round_number + 1})")
-        else:
-            mod_count = sum(1 for r in proposal_reviews if r.verdict == "MODIFY")
-            on_progress(agent_name, f"done — modified {mod_count} (round {round_number + 1})")
-
-    return AgentReviewResponse(
-        agent_name=agent_name, all_approved=all_approved,
-        proposal_reviews=proposal_reviews,
-        summary=raw.output.get("summary", ""),
-        duration_seconds=raw.duration_seconds, usage=raw.usage,
-    )
+# --- Edit validation and deduplication ---
 
 
 def validate_edits(
@@ -558,17 +113,17 @@ def validate_edits(
 def deduplicate_edits(edits: list[FileEdit]) -> tuple[list[FileEdit], list[FileEdit]]:
     """Remove exact duplicate edits.
 
-    When multiple edits target the same (file, original_text), only the
-    first is kept. Positional overlaps are handled downstream by
+    When multiple edits target the same (file, original_text, replacement_text),
+    only the first is kept. Positional overlaps are handled downstream by
     diff-match-patch merge.
 
     Returns (kept_edits, dropped_edits).
     """
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     kept: list[FileEdit] = []
     dropped: list[FileEdit] = []
     for edit in edits:
-        key = (edit.file, edit.original_text)
+        key = (edit.file, edit.original_text, edit.replacement_text)
         if key in seen:
             dropped.append(edit)
         else:
@@ -594,6 +149,9 @@ def _edit_overlaps_locked(
     return any(pos < end and start < edit_end for start, end in regions)
 
 
+# --- Proposal merging ---
+
+
 def merge_proposals(
     proposals: list[AgentProposal],
     reviews: list[AgentReviewResponse],
@@ -606,11 +164,9 @@ def merge_proposals(
     If multiple reviewers modify the same edit, the last one wins (next review
     round can resolve disagreements).
 
-    Edits overlapping locked_regions are protected from modification —
+    Edits overlapping locked_regions are protected from modification --
     their arbitration result is final.
     """
-    # Build a lookup: (agent_name, edit_index) → new replacement_text
-    # Skip modifications to edits that overlap locked regions
     modifications: dict[tuple[str, int], str] = {}
     for review in reviews:
         for pr in review.proposal_reviews:
@@ -652,9 +208,128 @@ def merge_proposals(
             summary=proposal.summary,
             duration_seconds=proposal.duration_seconds,
             error=proposal.error,
+            usage=proposal.usage,
         ))
 
     return updated
+
+
+# --- Parallel agent helper ---
+
+
+async def _gather_results(coros: dict[str, asyncio.coroutines]) -> dict[str, object]:
+    """Run named coroutines in parallel via TaskGroup and return results by name."""
+    async with asyncio.TaskGroup() as tg:
+        tasks = {name: tg.create_task(coro) for name, coro in coros.items()}
+    return {name: t.result() for name, t in tasks.items()}
+
+
+# --- Individual agent runners ---
+
+
+async def _run_single_proposer(
+    agent_name: str,
+    propose_prompt: str,
+    cli_args: list[str],
+    repo_root: str,
+    timeout_seconds: int,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> AgentProposal:
+    """Run a single agent in propose mode."""
+    raw = await run_agent(
+        agent_name, propose_prompt, cli_args, repo_root,
+        timeout_seconds, on_progress, progress_label="proposing",
+    )
+    if raw.error:
+        return AgentProposal(
+            agent_name=agent_name, edits=[], summary="Agent failed.",
+            error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
+        )
+
+    edits = parse_edits(raw.output.get("edits", []))
+    if on_progress:
+        on_progress(agent_name, f"done \u2014 {len(edits)} edit(s)")
+
+    return AgentProposal(
+        agent_name=agent_name, edits=edits,
+        summary=raw.output.get("summary", ""),
+        duration_seconds=raw.duration_seconds, usage=raw.usage,
+    )
+
+
+async def _run_single_reviewer(
+    agent_name: str,
+    review_prompt: str,
+    cli_args: list[str],
+    repo_root: str,
+    timeout_seconds: int,
+    round_number: int,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> AgentReviewResponse:
+    """Run a single agent in review mode."""
+    raw = await run_agent(
+        agent_name, review_prompt, cli_args, repo_root,
+        timeout_seconds, on_progress,
+        progress_label=f"reviewing (round {round_number + 1})",
+    )
+    if raw.error:
+        return AgentReviewResponse(
+            agent_name=agent_name, all_approved=True,  # failed agent doesn't block
+            proposal_reviews=[], summary="Agent failed.",
+            error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
+        )
+
+    all_approved = raw.output.get("all_approved", True)
+    proposal_reviews = parse_proposal_reviews(
+        raw.output.get("proposal_reviews", [])
+    )
+
+    if on_progress:
+        if all_approved:
+            on_progress(agent_name, f"done \u2014 approved all (round {round_number + 1})")
+        else:
+            mod_count = sum(1 for r in proposal_reviews if r.verdict == "MODIFY")
+            on_progress(agent_name, f"done \u2014 modified {mod_count} (round {round_number + 1})")
+
+    return AgentReviewResponse(
+        agent_name=agent_name, all_approved=all_approved,
+        proposal_reviews=proposal_reviews,
+        summary=raw.output.get("summary", ""),
+        duration_seconds=raw.duration_seconds, usage=raw.usage,
+    )
+
+
+async def _run_single_dissenter(
+    agent_name: str,
+    prompt: str,
+    cli_args: list[str],
+    repo_root: str,
+    timeout_seconds: int,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> Dissent:
+    """Run a single agent to collect a dissenting opinion."""
+    raw = await run_agent(
+        agent_name, prompt, cli_args, repo_root,
+        timeout_seconds, on_progress,
+        progress_label="dissenting", report_tool_use=False,
+    )
+    if raw.error:
+        return Dissent(
+            agent_name=agent_name, opinion="",
+            duration_seconds=raw.duration_seconds, usage=raw.usage,
+        )
+
+    opinion = raw.output.get("opinion", "")
+    if on_progress:
+        on_progress(agent_name, "done \u2014 dissent recorded")
+
+    return Dissent(
+        agent_name=agent_name, opinion=opinion,
+        duration_seconds=raw.duration_seconds, usage=raw.usage,
+    )
+
+
+# --- Phase runners ---
 
 
 async def run_propose_phase(
@@ -674,37 +349,33 @@ async def run_propose_phase(
         task=task,
     )
 
-    # Determine the agent mode for the system prompt
     mode = task if task in ("expand", "contract", "custom") else "propose"
 
-    proposals: list[AgentProposal] = []
+    coros: dict[str, asyncio.coroutines] = {}
+    for name, agent_cfg in config.agents.items():
+        if not agent_cfg.enabled:
+            continue
+        system_prompt = build_agent_system_prompt(
+            name, mode, agent_cfg.system_prompt_override,
+            custom_task_prompt=custom_task_prompt,
+        )
+        max_turns = (
+            agent_cfg.propose_max_turns
+            if agent_cfg.propose_max_turns is not None
+            else config.general.propose_max_turns
+        )
+        cli_args = build_cli_args(
+            name, system_prompt, agent_cfg.propose_model, repo_root,
+            max_turns=max_turns,
+            allowed_tools=agent_cfg.allowed_tools or None,
+        )
+        coros[name] = _run_single_proposer(
+            name, propose_prompt, cli_args, repo_root,
+            config.general.timeout_seconds, on_progress,
+        )
 
-    async with asyncio.TaskGroup() as tg:
-        tasks = {}
-        for name, agent_cfg in config.agents.items():
-            if not agent_cfg.enabled:
-                continue
-            system_prompt = build_agent_system_prompt(
-                name, mode, agent_cfg.system_prompt_override,
-                custom_task_prompt=custom_task_prompt,
-            )
-            max_turns = agent_cfg.propose_max_turns if agent_cfg.propose_max_turns is not None else config.general.propose_max_turns
-            cli_args = build_cli_args(
-                name, system_prompt, agent_cfg.propose_model, repo_root,
-                max_turns=max_turns,
-                allowed_tools=agent_cfg.allowed_tools or None,
-            )
-            tasks[name] = tg.create_task(
-                _run_single_proposer(
-                    name, propose_prompt, cli_args, repo_root,
-                    config.general.timeout_seconds, on_progress,
-                )
-            )
-
-    for name, task_obj in tasks.items():
-        proposals.append(task_obj.result())
-
-    return proposals
+    results = await _gather_results(coros)
+    return list(results.values())
 
 
 async def run_review_phase(
@@ -718,52 +389,51 @@ async def run_review_phase(
 ) -> list[AgentReviewResponse]:
     """Run all enabled agents in review mode (parallel).
 
-    Each agent only reviews proposals from OTHER agents — not its own.
+    Each agent only reviews proposals from OTHER agents -- not its own.
     """
     reviews: list[AgentReviewResponse] = []
+    coros: dict[str, asyncio.coroutines] = {}
 
-    async with asyncio.TaskGroup() as tg:
-        tasks = {}
-        for name, agent_cfg in config.agents.items():
-            if not agent_cfg.enabled:
-                continue
-            # Filter out this agent's own proposals
-            other_proposals = [
-                p for p in proposals if p.agent_name != name
-            ]
-            # If no other proposals to review, auto-approve
-            if not any(p.edits for p in other_proposals):
-                reviews.append(AgentReviewResponse(
-                    agent_name=name,
-                    all_approved=True,
-                    proposal_reviews=[],
-                    summary="No proposals from other agents to review.",
-                ))
-                continue
+    for name, agent_cfg in config.agents.items():
+        if not agent_cfg.enabled:
+            continue
+        other_proposals = [p for p in proposals if p.agent_name != name]
+        if not any(p.edits for p in other_proposals):
+            reviews.append(AgentReviewResponse(
+                agent_name=name,
+                all_approved=True,
+                proposal_reviews=[],
+                summary="No proposals from other agents to review.",
+            ))
+            continue
 
-            review_prompt = build_review_round_prompt(
-                other_proposals, file_contents, canon, round_number,
-            )
-            system_prompt = build_agent_system_prompt(
-                name, "review", agent_cfg.system_prompt_override,
-            )
-            model = agent_cfg.review_model or agent_cfg.propose_model
-            max_turns = agent_cfg.review_max_turns if agent_cfg.review_max_turns is not None else config.general.review_max_turns
-            cli_args = build_cli_args(
-                name, system_prompt, model, repo_root,
-                max_turns=max_turns,
-            )
-            tasks[name] = tg.create_task(
-                _run_single_reviewer(
-                    name, review_prompt, cli_args, repo_root,
-                    config.general.timeout_seconds, round_number, on_progress,
-                )
-            )
+        review_prompt = build_review_round_prompt(
+            other_proposals, file_contents, canon, round_number,
+        )
+        system_prompt = build_agent_system_prompt(
+            name, "review", agent_cfg.system_prompt_override,
+        )
+        model = agent_cfg.review_model or agent_cfg.propose_model
+        max_turns = (
+            agent_cfg.review_max_turns
+            if agent_cfg.review_max_turns is not None
+            else config.general.review_max_turns
+        )
+        cli_args = build_cli_args(
+            name, system_prompt, model, repo_root,
+            max_turns=max_turns,
+        )
+        coros[name] = _run_single_reviewer(
+            name, review_prompt, cli_args, repo_root,
+            config.general.timeout_seconds, round_number, on_progress,
+        )
 
-    for name, task in tasks.items():
-        reviews.append(task.result())
-
+    results = await _gather_results(coros)
+    reviews.extend(results.values())
     return reviews
+
+
+# --- Dissent collection ---
 
 
 def _build_dissent_prompt(
@@ -778,7 +448,7 @@ def _build_dissent_prompt(
             continue
         parts.append(f"\n## Edits from {proposal.agent_name}\n")
         for i, edit in enumerate(proposal.edits):
-            parts.append(f"\n### Edit {i} — {edit.file}\n")
+            parts.append(f"\n### Edit {i} \u2014 {edit.file}\n")
             parts.append(f"**Replace:**\n```\n{edit.original_text}\n```\n")
             parts.append(f"**With:**\n```\n{edit.replacement_text}\n```\n")
 
@@ -788,36 +458,6 @@ def _build_dissent_prompt(
         "Return your response as JSON with a single \"opinion\" field.\n"
     )
     return "".join(parts)
-
-
-async def _run_single_dissenter(
-    agent_name: str,
-    prompt: str,
-    cli_args: list[str],
-    repo_root: str,
-    timeout_seconds: int,
-    on_progress: Callable[[str, str], None] | None = None,
-) -> Dissent:
-    """Run a single agent to collect a dissenting opinion."""
-    raw = await _run_agent(
-        agent_name, prompt, cli_args, repo_root,
-        timeout_seconds, on_progress,
-        progress_label="dissenting", report_tool_use=False,
-    )
-    if raw.error:
-        return Dissent(
-            agent_name=agent_name, opinion="",
-            duration_seconds=raw.duration_seconds, usage=raw.usage,
-        )
-
-    opinion = raw.output.get("opinion", "")
-    if on_progress:
-        on_progress(agent_name, "done — dissent recorded")
-
-    return Dissent(
-        agent_name=agent_name, opinion=opinion,
-        duration_seconds=raw.duration_seconds, usage=raw.usage,
-    )
 
 
 async def _collect_dissents(
@@ -831,60 +471,34 @@ async def _collect_dissents(
     """Collect brief dissenting opinions from agents that didn't approve."""
     prompt = _build_dissent_prompt(proposals, file_contents)
 
-    dissents: list[Dissent] = []
+    coros: dict[str, asyncio.coroutines] = {}
+    for name in dissenting_agents:
+        agent_cfg = config.agents.get(name)
+        if not agent_cfg or not agent_cfg.enabled:
+            continue
+        system_prompt = build_agent_system_prompt(name, "dissent")
+        model = agent_cfg.review_model or agent_cfg.propose_model
+        cli_args = build_cli_args(
+            name, system_prompt, model, repo_root,
+            max_turns=1,
+        )
+        coros[name] = _run_single_dissenter(
+            name, prompt, cli_args, repo_root,
+            config.general.timeout_seconds, on_progress,
+        )
 
-    async with asyncio.TaskGroup() as tg:
-        tasks = {}
-        for name in dissenting_agents:
-            agent_cfg = config.agents.get(name)
-            if not agent_cfg or not agent_cfg.enabled:
-                continue
-            system_prompt = build_agent_system_prompt(name, "dissent")
-            model = agent_cfg.review_model or agent_cfg.propose_model
-            cli_args = build_cli_args(
-                name, system_prompt, model, repo_root,
-                max_turns=1,
-            )
-            tasks[name] = tg.create_task(
-                _run_single_dissenter(
-                    name, prompt, cli_args, repo_root,
-                    config.general.timeout_seconds, on_progress,
-                )
-            )
-
-    for name, task_obj in tasks.items():
-        result = task_obj.result()
-        if result.opinion:
-            dissents.append(result)
-
-    return dissents
+    results = await _gather_results(coros)
+    return [d for d in results.values() if d.opinion]
 
 
-@dataclass
-class ContestedEdit:
-    """An edit that two agents keep modifying back and forth."""
-    file: str
-    original_text: str
-    versions: dict[str, str]  # agent_name → replacement_text
-    rationales: dict[str, str]  # agent_name → rationale
-
-
-@dataclass
-class ArbitrationResult:
-    file: str
-    original_text: str
-    replacement_text: str
-    rationale: str
-    usage: TokenUsage = field(default_factory=TokenUsage)
+# --- Stall detection and arbitration ---
 
 
 def _detect_stall(rounds: list[IterationRound]) -> bool:
     """Detect if the review loop has stalled (no improvement in the latest round)."""
     if len(rounds) < 2:
         return False
-    def _approvals(rnd: IterationRound) -> int:
-        return sum(1 for r in rnd.reviews if r.all_approved and r.error is None)
-    return _approvals(rounds[-1]) <= _approvals(rounds[-2])
+    return count_approvals(rounds[-1].reviews) <= count_approvals(rounds[-2].reviews)
 
 
 def _find_contested_edits(
@@ -895,7 +509,6 @@ def _find_contested_edits(
     if len(rounds) < 2:
         return []
 
-    # Track which (original_agent, edit_index) pairs were modified each round
     modified_per_round: list[set[tuple[str, int]]] = []
     for rnd in rounds:
         modified = set()
@@ -905,7 +518,6 @@ def _find_contested_edits(
                     modified.add((pr.original_agent, pr.edit_index))
         modified_per_round.append(modified)
 
-    # Find edits modified in the last 2 rounds
     if len(modified_per_round) < 2:
         return []
     contested_keys = modified_per_round[-1] & modified_per_round[-2]
@@ -913,19 +525,16 @@ def _find_contested_edits(
     if not contested_keys:
         return []
 
-    # Build contested edit objects with versions from currently-dissenting agents
     contested = []
     last_reviews = rounds[-1].reviews
     prev_reviews = rounds[-2].reviews
 
-    # Only include versions from agents still dissenting in the latest round
     approved_in_latest = {
         r.agent_name for r in last_reviews
         if r.all_approved and r.error is None
     }
 
     for agent_name, edit_idx in contested_keys:
-        # Find the edit in current proposals
         proposal = next(
             (p for p in current_proposals if p.agent_name == agent_name),
             None,
@@ -937,11 +546,10 @@ def _find_contested_edits(
         versions: dict[str, str] = {}
         rationales: dict[str, str] = {}
 
-        # Collect versions only from agents who are still dissenting
         for rnd_reviews in (prev_reviews, last_reviews):
             for review in rnd_reviews:
                 if review.agent_name in approved_in_latest:
-                    continue  # this agent already approved — their old version is stale
+                    continue
                 for pr in review.proposal_reviews:
                     if (pr.original_agent == agent_name
                             and pr.edit_index == edit_idx
@@ -950,7 +558,6 @@ def _find_contested_edits(
                         versions[review.agent_name] = pr.modified_replacement
                         rationales[review.agent_name] = pr.rationale
 
-        # Also include the current version
         versions[agent_name] = edit.replacement_text
         rationales.setdefault(agent_name, edit.rationale)
 
@@ -997,62 +604,75 @@ async def _run_arbitration(
     repo_root: str,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[ArbitrationResult]:
-    """Run arbitration on contested edits."""
-    results: list[ArbitrationResult] = []
-
-    # Use the review_model of the first enabled agent, or fall back to default
+    """Run arbitration on contested edits using run_agent for proper error handling."""
     model = None
     for agent_cfg in config.agents.values():
         if agent_cfg.enabled:
             model = agent_cfg.review_model or agent_cfg.propose_model
             break
 
-    async with asyncio.TaskGroup() as tg:
-        tasks_list = []
-        for i, contested in enumerate(contested_edits):
-            prompt = _build_arbitration_prompt(contested, file_contents)
-            cli_args = build_cli_args(
-                f"arbitrator_{i}",
-                ARBITRATOR_PROMPT,
-                model,
-                repo_root,
-                max_turns=1,
-            )
+    coros: dict[str, asyncio.coroutines] = {}
+    # Store contested edits by key for result mapping
+    contested_by_key: dict[str, ContestedEdit] = {}
 
-            async def _run(p=prompt, args=cli_args, ce=contested):
-                if on_progress:
-                    on_progress("arbitrator", f"resolving conflict in {ce.file}")
-                arb_start = time.monotonic()
-                arb_result = await asyncio.wait_for(
-                    _spawn_claude(args, p, repo_root),
-                    timeout=config.general.timeout_seconds,
-                )
-                usage = _extract_usage(arb_result.result_json) if arb_result.result_json else TokenUsage()
-                output = _unwrap_result(arb_result.result_json)
+    for i, contested in enumerate(contested_edits):
+        key = f"arbitrator_{i}"
+        contested_by_key[key] = contested
+        prompt = _build_arbitration_prompt(contested, file_contents)
+        cli_args = build_cli_args(
+            key, ARBITRATOR_PROMPT, model, repo_root, max_turns=1,
+        )
+        coros[key] = _run_single_arbitrator(
+            key, contested, prompt, cli_args, repo_root,
+            config.general.timeout_seconds, on_progress,
+        )
 
-                replacement = ""
-                rationale = ""
-                if output:
-                    replacement = output.get("replacement_text", "")
-                    rationale = output.get("rationale", "")
+    raw_results = await _gather_results(coros)
 
-                if on_progress:
-                    on_progress("arbitrator", "done — conflict resolved")
-
-                return ArbitrationResult(
-                    file=ce.file,
-                    original_text=ce.original_text,
-                    replacement_text=replacement or list(ce.versions.values())[0],
-                    rationale=rationale,
-                    usage=usage,
-                )
-
-            tasks_list.append(tg.create_task(_run()))
-
-    for t in tasks_list:
-        results.append(t.result())
-
+    results: list[ArbitrationResult] = []
+    for key in sorted(raw_results):
+        results.append(raw_results[key])
     return results
+
+
+async def _run_single_arbitrator(
+    arb_name: str,
+    contested: ContestedEdit,
+    prompt: str,
+    cli_args: list[str],
+    repo_root: str,
+    timeout_seconds: int,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> ArbitrationResult:
+    """Run a single arbitration call via run_agent (with full error handling)."""
+    if on_progress:
+        on_progress("arbitrator", f"resolving conflict in {contested.file}")
+
+    raw = await run_agent(
+        arb_name, prompt, cli_args, repo_root,
+        timeout_seconds, on_progress=None,
+        progress_label="arbitrating", report_tool_use=False,
+    )
+
+    replacement = ""
+    rationale = ""
+    if raw.output:
+        replacement = raw.output.get("replacement_text", "")
+        rationale = raw.output.get("rationale", "")
+
+    if on_progress:
+        on_progress("arbitrator", "done \u2014 conflict resolved")
+
+    return ArbitrationResult(
+        file=contested.file,
+        original_text=contested.original_text,
+        replacement_text=replacement or list(contested.versions.values())[0],
+        rationale=rationale,
+        usage=raw.usage,
+    )
+
+
+# --- Main iteration loop ---
 
 
 async def run_iteration_loop(
@@ -1062,7 +682,7 @@ async def run_iteration_loop(
     task: str | None = None,
     custom_task_prompt: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
-    on_phase: Callable | None = None,
+    on_phase: Callable[[PhaseEvent], None] | None = None,
 ) -> IterationResult:
     """Run the full propose-review-iterate loop.
 
@@ -1070,9 +690,7 @@ async def run_iteration_loop(
     specified files from the working tree.
     task: "expand", "contract", "custom", or None (default review).
     custom_task_prompt: prompt text for custom tasks.
-    on_phase: callback for phase transitions. Called with:
-      - ("propose_done", proposals)
-      - ("review_done", round_number, reviews, consensus_threshold)
+    on_phase: callback for typed phase events (ProposeDone, ReviewDone, etc.).
     """
     root = Path(repo_root)
     start = time.monotonic()
@@ -1121,7 +739,7 @@ async def run_iteration_loop(
         total_usage += p.usage
 
     if on_phase:
-        on_phase("propose_done", proposals)
+        on_phase(ProposeDone(proposals=proposals))
 
     # 4. Validate and deduplicate
     for proposal in proposals:
@@ -1130,17 +748,15 @@ async def run_iteration_loop(
     all_edits = []
     for p in proposals:
         all_edits.extend(p.edits)
-    # Only remove exact duplicates before review rounds.
-    # Overlapping edits are handled by diff-match-patch merge at step 8.
     all_edits, initial_dropped = deduplicate_edits(all_edits)
 
     # Sync per-agent proposals to remove exact duplicates
     if initial_dropped:
-        kept_set = {(e.file, e.original_text) for e in all_edits}
+        kept_set = {(e.file, e.original_text, e.replacement_text) for e in all_edits}
         for proposal in proposals:
             proposal.edits = [
                 e for e in proposal.edits
-                if (e.file, e.original_text) in kept_set
+                if (e.file, e.original_text, e.replacement_text) in kept_set
             ]
 
     # 5. If no edits, content is fine
@@ -1161,8 +777,7 @@ async def run_iteration_loop(
     consensus = False
     stalled = False
 
-    # Regions resolved by arbitration — no further changes allowed.
-    # Maps file → list of (start, end) position ranges in the original text.
+    # Regions resolved by arbitration -- no further changes allowed.
     locked_regions: dict[str, list[tuple[int, int]]] = {}
 
     # Track the best (highest approval) proposals seen
@@ -1178,9 +793,7 @@ async def run_iteration_loop(
         for r in reviews:
             total_usage += r.usage
 
-        approvals = sum(
-            1 for r in reviews if r.all_approved and r.error is None
-        )
+        approvals = count_approvals(reviews)
         consensus_reached = approvals >= config.general.consensus_threshold
 
         rounds.append(IterationRound(
@@ -1190,8 +803,11 @@ async def run_iteration_loop(
         ))
 
         if on_phase:
-            on_phase("review_done", round_num, reviews,
-                     config.general.consensus_threshold)
+            on_phase(ReviewDone(
+                round_number=round_num,
+                reviews=reviews,
+                consensus_threshold=config.general.consensus_threshold,
+            ))
 
         # Track the version with the highest approval count
         if approvals >= best_approvals:
@@ -1203,14 +819,14 @@ async def run_iteration_loop(
             consensus = True
             break
 
-        # Detect stall — no improvement for 2 consecutive rounds
+        # Detect stall -- no improvement for 2 consecutive rounds
         if _detect_stall(rounds):
             contested = _find_contested_edits(
                 rounds, current_proposals,
             )
             if contested:
                 if on_phase:
-                    on_phase("arbitration_start", contested)
+                    on_phase(ArbitrationStart(contested=contested))
 
                 arb_results = await _run_arbitration(
                     contested, file_contents, config, repo_root,
@@ -1235,7 +851,7 @@ async def run_iteration_loop(
                                 rationale=edit.rationale,
                             )
 
-                # Lock arbitrated regions — no further modifications allowed
+                # Lock arbitrated regions
                 for ar in arb_results:
                     pos = file_contents.get(ar.file, "").find(ar.original_text)
                     if pos >= 0:
@@ -1244,12 +860,12 @@ async def run_iteration_loop(
                         )
 
                 if on_phase:
-                    on_phase("arbitration_done", arb_results)
+                    on_phase(ArbitrationDone(results=arb_results))
 
                 # Run one more review round with the arbitrated edits
                 continue
 
-            # No contested edits found but still stalled — exit early
+            # No contested edits found but still stalled -- exit early
             stalled = True
             break
 
@@ -1259,7 +875,7 @@ async def run_iteration_loop(
         )
 
         # If an agent's only modifications targeted locked regions, they
-        # effectively approved — update their review for consensus counting.
+        # effectively approved -- update their review for consensus counting.
         if locked_regions:
             for review in reviews:
                 if review.all_approved or review.error:
@@ -1291,15 +907,13 @@ async def run_iteration_loop(
 
     merge_result = merge_agent_edits(file_contents, current_proposals)
 
-    # 8a. Arbitrate any merge conflicts (skip if consensus — agents already
+    # 8a. Arbitrate any merge conflicts (skip if consensus -- agents already
     #     approved each other's work, overlaps just need mechanical resolution)
     if merge_result.failed_patches and not consensus:
-        # Match each failed patch to the overlapping edit from another agent
         contested: list[ContestedEdit] = []
         for fp in merge_result.failed_patches:
             original = file_contents.get(fp.file, "")
 
-            # Find the failing agent's FileEdit that corresponds to this patch
             failing_proposal = next(
                 (p for p in current_proposals if p.agent_name == fp.agent_name), None,
             )
@@ -1316,7 +930,6 @@ async def run_iteration_loop(
             f_start = original.find(failing_edit.original_text)
             f_end = f_start + len(failing_edit.original_text)
 
-            # Find which other agent's edit overlaps this region
             for other in current_proposals:
                 if other.agent_name == fp.agent_name:
                     continue
@@ -1328,12 +941,10 @@ async def run_iteration_loop(
                         continue
                     o_end = o_start + len(other_edit.original_text)
                     if f_start < o_end and o_start < f_end:
-                        # Build union region covering both edits
                         union_start = min(f_start, o_start)
                         union_end = max(f_end, o_end)
                         union_text = original[union_start:union_end]
 
-                        # Each agent's version of the union region
                         other_version = union_text.replace(
                             other_edit.original_text, other_edit.replacement_text, 1,
                         )
@@ -1360,10 +971,8 @@ async def run_iteration_loop(
 
         if contested:
             if on_phase:
-                on_phase("arbitration_start", contested)
+                on_phase(ArbitrationStart(contested=contested))
 
-            # Track the winning agent's version text for each contested edit
-            # so we know what to replace in the merged text after arbitration.
             winner_texts: list[str] = []
             for ce, cfp in zip(contested, merge_result.failed_patches):
                 for agent_name, version in ce.versions.items():
@@ -1382,7 +991,7 @@ async def run_iteration_loop(
                 )
 
             if on_phase:
-                on_phase("arbitration_done", arb_results)
+                on_phase(ArbitrationDone(results=arb_results))
 
     # Derive final_edits (one per changed file) for truthiness checks
     final_edits = [
@@ -1392,7 +1001,6 @@ async def run_iteration_loop(
     ]
 
     # 9. Collect dissenting opinions if consensus was not reached
-    #    Use the best round's reviews to identify dissenters (not the last round)
     dissents: list[Dissent] = []
     if not consensus and rounds and final_edits:
         best_round_reviews = rounds[best_round].reviews
@@ -1409,7 +1017,7 @@ async def run_iteration_loop(
                 total_usage += d.usage
 
             if on_phase:
-                on_phase("dissents_done", dissents)
+                on_phase(DissentsDone(dissents=dissents))
 
     return IterationResult(
         consensus_reached=consensus,

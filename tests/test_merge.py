@@ -1,11 +1,14 @@
 """Tests for the word-level merge system and edit locking."""
 
-from multi_agent.consensus import (
+from multi_agent.models import (
     AgentProposal,
     AgentReviewResponse,
     FileEdit,
     ProposalReview,
+)
+from multi_agent.consensus import (
     _edit_overlaps_locked,
+    deduplicate_edits,
     merge_proposals,
 )
 from multi_agent.merge import apply_arbitration_to_merged, merge_agent_edits
@@ -270,3 +273,99 @@ class TestMergeProposalsLocked:
         ]
         result = merge_proposals(self._proposals(), reviews)
         assert result[0].edits[0].replacement_text == "pol version"
+
+
+# --- count_approvals ---
+
+
+class TestCountApprovals:
+    def test_all_approved(self):
+        from multi_agent.models import count_approvals
+        reviews = [
+            AgentReviewResponse(agent_name="a", all_approved=True, proposal_reviews=[], summary=""),
+            AgentReviewResponse(agent_name="b", all_approved=True, proposal_reviews=[], summary=""),
+        ]
+        assert count_approvals(reviews) == 2
+
+    def test_error_not_counted(self):
+        from multi_agent.models import count_approvals
+        reviews = [
+            AgentReviewResponse(agent_name="a", all_approved=True, proposal_reviews=[], summary="", error="fail"),
+            AgentReviewResponse(agent_name="b", all_approved=True, proposal_reviews=[], summary=""),
+        ]
+        assert count_approvals(reviews) == 1
+
+    def test_rejected_not_counted(self):
+        from multi_agent.models import count_approvals
+        reviews = [
+            AgentReviewResponse(agent_name="a", all_approved=False, proposal_reviews=[], summary=""),
+            AgentReviewResponse(agent_name="b", all_approved=True, proposal_reviews=[], summary=""),
+        ]
+        assert count_approvals(reviews) == 1
+
+    def test_empty_list(self):
+        from multi_agent.models import count_approvals
+        assert count_approvals([]) == 0
+
+
+# --- sanitize_edit_path ---
+
+
+class TestSanitizeEditPath:
+    def test_normal_path(self):
+        from multi_agent.models import sanitize_edit_path
+        assert sanitize_edit_path("canon/chapter-01.md") == "canon/chapter-01.md"
+
+    def test_absolute_path_rejected(self):
+        from multi_agent.models import sanitize_edit_path
+        import pytest
+        with pytest.raises(ValueError, match="Absolute path"):
+            sanitize_edit_path("/etc/passwd")
+
+    def test_traversal_rejected(self):
+        from multi_agent.models import sanitize_edit_path
+        import pytest
+        with pytest.raises(ValueError, match="Path traversal"):
+            sanitize_edit_path("../../etc/passwd")
+
+    def test_sneaky_traversal_rejected(self):
+        from multi_agent.models import sanitize_edit_path
+        import pytest
+        with pytest.raises(ValueError, match="Path traversal"):
+            sanitize_edit_path("canon/../../etc/passwd")
+
+    def test_simple_filename(self):
+        from multi_agent.models import sanitize_edit_path
+        assert sanitize_edit_path("readme.md") == "readme.md"
+
+
+# --- deduplicate_edits with 3-tuple key ---
+
+
+class TestDeduplicateEdits:
+    def test_exact_duplicates_removed(self):
+        edits = [
+            FileEdit("f.md", "foo", "bar", "r1"),
+            FileEdit("f.md", "foo", "bar", "r2"),
+        ]
+        kept, dropped = deduplicate_edits(edits)
+        assert len(kept) == 1
+        assert len(dropped) == 1
+
+    def test_different_replacements_kept(self):
+        edits = [
+            FileEdit("f.md", "foo", "bar", "r1"),
+            FileEdit("f.md", "foo", "baz", "r2"),
+        ]
+        kept, dropped = deduplicate_edits(edits)
+        assert len(kept) == 2
+        assert len(dropped) == 0
+
+    def test_different_files_kept(self):
+        edits = [
+            FileEdit("a.md", "foo", "bar", "r1"),
+            FileEdit("b.md", "foo", "bar", "r2"),
+        ]
+        kept, dropped = deduplicate_edits(edits)
+        assert len(kept) == 2
+        assert len(dropped) == 0

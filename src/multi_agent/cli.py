@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -89,18 +90,28 @@ def _run_iteration_and_present(
     """Run the iteration loop and present results. Returns exit code."""
     from multi_agent.consensus import run_iteration_loop
     from multi_agent.context import apply_merged_texts, build_diff_preview_from_merged
+    from multi_agent.models import (
+        ArbitrationDone,
+        ArbitrationStart,
+        DissentsDone,
+        PhaseEvent,
+        ProposeDone,
+        ReviewDone,
+        count_approvals,
+    )
 
-    def on_phase(event, *args):
-        if event == "propose_done":
-            print_proposals_summary(args[0])
-        elif event == "review_done":
-            print_review_round(args[0], args[1], args[2])
-        elif event == "arbitration_start":
-            print_arbitration_start(args[0])
-        elif event == "arbitration_done":
-            print_arbitration_done(args[0])
-        elif event == "dissents_done":
-            print_dissents(args[0])
+    def on_phase(event: PhaseEvent) -> None:
+        match event:
+            case ProposeDone(proposals=proposals):
+                print_proposals_summary(proposals)
+            case ReviewDone(round_number=rn, reviews=reviews, consensus_threshold=ct):
+                print_review_round(rn, reviews, ct)
+            case ArbitrationStart(contested=contested):
+                print_arbitration_start(contested)
+            case ArbitrationDone(results=results):
+                print_arbitration_done(results)
+            case DissentsDone(dissents=dissents):
+                print_dissents(dissents)
 
     display_task = task_label or task
     print_header(files_display, canon_count, canon_size_kb, uncommitted_canon, task=display_task)
@@ -131,10 +142,7 @@ def _run_iteration_and_present(
     if result.consensus_reached:
         last_round = result.rounds[-1] if result.rounds else None
         if last_round:
-            approvals = sum(
-                1 for r in last_round.reviews
-                if r.all_approved and r.error is None
-            )
+            approvals = count_approvals(last_round.reviews)
             print_iteration_success(approvals, len(last_round.reviews))
         else:
             print_iteration_success(0, 0)
@@ -203,7 +211,10 @@ def _review_common(
         search_from=repo_root,
     )
     if max_rounds is not None:
-        config.general.max_rounds = max_rounds
+        config = dataclasses.replace(
+            config,
+            general=dataclasses.replace(config.general, max_rounds=max_rounds),
+        )
 
     task, custom_task_prompt = _resolve_task(task_name, config)
 
@@ -211,15 +222,15 @@ def _review_common(
     task_label = task  # preserve original task name for display
     if prompt:
         if task is None:
-            # No task specified — treat prompt as a custom task
+            # No task specified -- treat prompt as a custom task
             task = "custom"
             task_label = "prompt"
             custom_task_prompt = prompt
         elif task == "custom":
-            # Config-defined task — append user instructions
+            # Config-defined task -- append user instructions
             custom_task_prompt = f"{custom_task_prompt}\n\n{prompt}"
         else:
-            # Built-in task (expand/contract) — switch to custom with
+            # Built-in task (expand/contract) -- switch to custom with
             # the built-in's suffix + user instructions
             from multi_agent.agents import _MODE_SUFFIXES
             builtin_instructions = _MODE_SUFFIXES.get(task, "")

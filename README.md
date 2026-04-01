@@ -19,7 +19,8 @@ The review runs in phases:
 1. **Propose** — Each agent proposes concrete edits (search-and-replace) from their specialty perspective, running in parallel.
 2. **Review** — All agents review all proposals. Each either approves or suggests modifications.
 3. **Iterate** — If consensus isn't reached, modifications are merged and agents review again (up to `max_rounds`).
-4. **Present** — The final set of changes is shown as a unified diff. You choose whether to apply them.
+4. **Arbitrate** — If the loop stalls (no improvement for 2 rounds), contested edits are sent to an impartial arbitrator that picks the better version. Arbitrated regions are locked from further modification.
+5. **Present** — The final set of changes is shown as a unified diff. If consensus wasn't reached, dissenting agents provide brief opinions. You choose whether to apply the changes.
 
 ## Prerequisites
 
@@ -173,8 +174,8 @@ Place a `multi_agent.toml` in your fiction repository. See `multi_agent.example.
 | `max_canon_size_kb` | `500` | Max total size of canon context loaded |
 | `max_rounds` | `3` | Maximum propose-review iteration rounds |
 | `min_severity` | `"minor"` | Minimum severity for proposed edits: `"critical"`, `"major"`, `"minor"`, or `"suggestion"`. Set to `"major"` to skip nitpicks. |
-| `propose_max_turns` | `3` | Max turns per agent in the propose phase |
-| `review_max_turns` | `2` | Max turns per agent in review rounds |
+| `propose_max_turns` | `0` (unlimited) | Max turns per agent in the propose phase |
+| `review_max_turns` | `0` (unlimited) | Max turns per agent in review rounds |
 
 ### Agent options
 
@@ -183,10 +184,12 @@ Each agent under `[agents.<name>]` supports:
 | Option | Default | Description |
 |---|---|---|
 | `enabled` | `true` | Disable an agent to skip it |
-| `model` | — | Claude model for the propose phase (e.g., `claude-sonnet-4-6`) |
-| `review_model` | same as `model` | Model for review rounds (e.g., `claude-haiku-4-5-20251001` for speed) |
+| `propose_model` | — | Claude model for the propose phase (e.g., `claude-sonnet-4-6`) |
+| `review_model` | same as `propose_model` | Model for review rounds (e.g., `claude-haiku-4-5-20251001` for speed) |
 | `allowed_tools` | `[]` | Tools available during the propose phase (e.g., `["WebSearch", "WebFetch"]`) |
 | `system_prompt_override` | — | Replace the built-in system prompt entirely |
+| `propose_max_turns` | inherits from general | Override max turns for this agent's propose phase |
+| `review_max_turns` | inherits from general | Override max turns for this agent's review phase |
 
 ### Custom tasks
 
@@ -259,6 +262,7 @@ multi-agent [--repo PATH] check-config
 - `--task NAME` — task mode: `expand`, `contract`, or a custom task from config
 - `--dry-run` — show proposed changes without applying
 - `--max-rounds N` — override the configured max iteration rounds
+- `--prompt TEXT` — append additional instructions for the agents
 
 ## Project Structure
 
@@ -266,11 +270,14 @@ multi-agent [--repo PATH] check-config
 multi-agent/
 ├── multi_agent.example.toml  # Example config (copy to your fiction repo)
 └── src/multi_agent/
+    ├── models.py             # Dataclasses, typed events, parsing utilities
+    ├── claude_runner.py      # Claude CLI subprocess management
+    ├── consensus.py          # Propose-review-iterate orchestration loop
     ├── agents.py             # Agent system prompts, JSON schemas, prompt modes
-    ├── consensus.py          # Propose-review-iterate loop and vote tallying
-    ├── context.py            # Git integration, prompt builders, edit application
+    ├── context.py            # Git integration, prompt builders
+    ├── merge.py              # N-way edit merging via diff-match-patch
     ├── cli.py                # CLI commands
     ├── output.py             # Rich terminal output formatting
-    ├── hook.py               # Git hook installer
-    └── config.py             # TOML config loading
+    ├── config.py             # TOML config loading
+    └── hook.py               # Git pre-commit hook installer
 ```

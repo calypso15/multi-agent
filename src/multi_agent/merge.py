@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from diff_match_patch import diff_match_patch
 
 if TYPE_CHECKING:
-    from multi_agent.consensus import AgentProposal
+    from multi_agent.models import AgentProposal
 
 
 @dataclass
@@ -66,8 +66,14 @@ def _words_to_chars(
         chars: list[str] = []
         for token in tokens:
             if token not in token_to_char:
+                next_index = len(token_array)
+                if next_index > 0x10FFFF:
+                    raise ValueError(
+                        f"Too many unique word tokens ({next_index}) for "
+                        "character encoding. Maximum supported is 1,114,111."
+                    )
                 token_array.append(token)
-                token_to_char[token] = chr(len(token_array) - 1)
+                token_to_char[token] = chr(next_index)
             chars.append(token_to_char[token])
         return "".join(chars)
 

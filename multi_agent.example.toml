@@ -54,7 +54,7 @@ propose_model = "claude-sonnet-4-6"
 allowed_tools = ["WebSearch", "WebFetch"]
 
 # Custom tasks (used with --task flag). Built-in tasks: expand, contract
-# Usage: python -m multi_agent review-files --task deepen-characters canon/chapter-03.md
+# Usage: python -m multi_agent review --task deepen-characters canon/chapter-03.md
 
 [tasks.deepen-characters]
 prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive and memorable."

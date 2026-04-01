@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from multi_agent.consensus import AgentProposal, FileEdit
+    from multi_agent.models import AgentProposal, FileEdit
 
 
 def find_git_root(start: Path | None = None) -> Path:
@@ -186,7 +186,7 @@ _SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
 def _propose_instructions(min_severity: str, task: str | None = None) -> str:
     """Build propose instructions with severity threshold and optional task."""
     if task in ("expand", "contract", "custom"):
-        # For task modes, severity filtering doesn't apply — the
+        # For task modes, severity filtering doesn't apply -- the
         # system prompt already describes the goal.
         return (
             "\n# YOUR TASK\n"
@@ -272,7 +272,7 @@ def build_review_round_prompt(
         parts.append(f"\n## Proposals from {display} ({proposal.agent_name})\n")
         parts.append(f"Summary: {proposal.summary}\n")
         for i, edit in enumerate(proposal.edits):
-            parts.append(f"\n### Edit {i} — {edit.file}\n")
+            parts.append(f"\n### Edit {i} \u2014 {edit.file}\n")
             parts.append(f"**Original text:**\n```\n{edit.original_text}\n```\n")
             parts.append(f"**Replacement:**\n```\n{edit.replacement_text}\n```\n")
             parts.append(f"**Rationale:** {edit.rationale}\n")
@@ -303,48 +303,19 @@ def _apply_edits_to_text(content: str, edits: list[FileEdit]) -> str:
     return content
 
 
-def _group_edits_by_file(edits: list[FileEdit]) -> dict[str, list[FileEdit]]:
-    """Group edits by their target file path."""
-    by_file: dict[str, list[FileEdit]] = {}
-    for edit in edits:
-        by_file.setdefault(edit.file, []).append(edit)
-    return by_file
-
-
-def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
-    """Apply edits to files in the working tree.
-
-    Returns list of modified file paths.
-    """
-    modified = []
-    for filepath, file_edits in sorted(_group_edits_by_file(edits).items()):
-        full_path = repo_root / filepath
-        content = full_path.read_text()
-        content = _apply_edits_to_text(content, file_edits)
-        full_path.write_text(content)
-        modified.append(filepath)
-
-    return modified
-
-
-def build_diff_preview(edits: list[FileEdit], file_contents: dict[str, str]) -> str:
-    """Generate a unified diff preview of what edits would produce."""
-    edits_by_file = _group_edits_by_file(edits)
-
-    diff_parts = []
-    for filepath in sorted(edits_by_file.keys()):
-        original = file_contents.get(filepath, "")
-        modified = _apply_edits_to_text(original, edits_by_file[filepath])
-
-        diff = difflib.unified_diff(
-            original.splitlines(keepends=True),
-            modified.splitlines(keepends=True),
-            fromfile=f"a/{filepath}",
-            tofile=f"b/{filepath}",
-        )
-        diff_parts.append("".join(diff))
-
-    return "\n".join(part for part in diff_parts if part)
+def _build_unified_diff(
+    filepath: str,
+    original: str,
+    modified: str,
+) -> str:
+    """Generate a unified diff between original and modified text for a file."""
+    diff = difflib.unified_diff(
+        original.splitlines(keepends=True),
+        modified.splitlines(keepends=True),
+        fromfile=f"a/{filepath}",
+        tofile=f"b/{filepath}",
+    )
+    return "".join(diff)
 
 
 def build_diff_preview_from_merged(
@@ -358,13 +329,7 @@ def build_diff_preview_from_merged(
         modified = merged_texts[filepath]
         if original == modified:
             continue
-        diff = difflib.unified_diff(
-            original.splitlines(keepends=True),
-            modified.splitlines(keepends=True),
-            fromfile=f"a/{filepath}",
-            tofile=f"b/{filepath}",
-        )
-        diff_parts.append("".join(diff))
+        diff_parts.append(_build_unified_diff(filepath, original, modified))
     return "\n".join(part for part in diff_parts if part)
 
 
@@ -374,8 +339,11 @@ def apply_merged_texts(
 ) -> list[str]:
     """Write merged texts to disk. Returns list of modified file paths."""
     modified = []
+    resolved_root = repo_root.resolve()
     for filepath in sorted(merged_texts.keys()):
-        full_path = repo_root / filepath
+        full_path = (repo_root / filepath).resolve()
+        if not full_path.is_relative_to(resolved_root):
+            raise ValueError(f"Path escapes repo root: {filepath}")
         full_path.write_text(merged_texts[filepath])
         modified.append(filepath)
     return modified

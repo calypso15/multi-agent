@@ -9,13 +9,13 @@ from pathlib import Path
 
 HOOK_MARKER = "# multi-agent-consensus-hook"
 
-HOOK_SCRIPT = f"""\
+HOOK_SCRIPT_TEMPLATE = """\
 #!/usr/bin/env bash
-{HOOK_MARKER}
+{hook_marker}
 # Multi-agent consensus pre-commit hook
 # Installed by: python -m multi_agent install-hook
 
-PYTHON="{{python_path}}"
+PYTHON="{python_path}"
 
 # Check that multi_agent is available
 if ! "$PYTHON" -c "import multi_agent" 2>/dev/null; then
@@ -47,7 +47,9 @@ def install_hook(repo_root: Path) -> None:
             shutil.copy2(hook_path, backup)
 
     python_path = sys.executable
-    script = HOOK_SCRIPT.format(python_path=python_path)
+    script = HOOK_SCRIPT_TEMPLATE.format(
+        hook_marker=HOOK_MARKER, python_path=python_path,
+    )
     hook_path.write_text(script)
     os.chmod(hook_path, 0o755)
 
