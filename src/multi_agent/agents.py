@@ -291,9 +291,17 @@ REVIEW_MODE_SUFFIX = """\
 You are in REVIEW mode. Other specialist agents have proposed edits to the \
 content. Review ALL proposals and decide whether each is acceptable.
 
+IMPORTANT: The files under review are drafts being improved — they are NOT \
+authoritative canon. Only files in the canon directory are authoritative. \
+Do not reject edits solely because they change terminology, facts, or \
+descriptions established in the file under review. Changing those is often \
+the point of the edit. Judge edits against the CANON FILES, not against \
+the current draft text.
+
 Consider from YOUR specialty perspective:
 - Does the proposed edit maintain correctness in your domain?
 - Does the proposed edit introduce new problems?
+- Is the edit consistent with established canon files?
 - Can the edit be improved while preserving the original intent?
 
 If ALL proposals are acceptable as-is, set "all_approved" to true and leave \

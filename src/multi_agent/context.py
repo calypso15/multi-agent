@@ -257,7 +257,10 @@ def build_review_round_prompt(
 
     parts: list[str] = [_canon_section(canon)]
 
-    parts.append("\n# ORIGINAL FILE CONTENTS\n")
+    parts.append("\n# FILES UNDER REVIEW (drafts being improved — not authoritative)\n")
+    parts.append("These files are the subject of editing. They may contain errors, "
+                  "inconsistencies, or outdated terminology that the proposed edits "
+                  "aim to fix. Only files in the canon directory are authoritative.\n")
     for path, content in sorted(file_contents.items()):
         parts.append(f"\n## {path}\n```\n{content}\n```\n")
 
