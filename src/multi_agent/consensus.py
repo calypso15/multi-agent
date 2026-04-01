@@ -567,21 +567,54 @@ def deduplicate_edits(edits: list[FileEdit]) -> tuple[list[FileEdit], list[FileE
     return kept, dropped
 
 
+def _edit_overlaps_locked(
+    edit: FileEdit,
+    file_contents: dict[str, str],
+    locked_regions: dict[str, list[tuple[int, int]]],
+) -> bool:
+    """Check if an edit overlaps any locked region in the original file."""
+    regions = locked_regions.get(edit.file)
+    if not regions:
+        return False
+    content = file_contents.get(edit.file, "")
+    pos = content.find(edit.original_text)
+    if pos < 0:
+        return False
+    edit_end = pos + len(edit.original_text)
+    return any(pos < end and start < edit_end for start, end in regions)
+
+
 def merge_proposals(
     proposals: list[AgentProposal],
     reviews: list[AgentReviewResponse],
+    locked_regions: dict[str, list[tuple[int, int]]] | None = None,
+    file_contents: dict[str, str] | None = None,
 ) -> list[AgentProposal]:
     """Apply review modifications to proposals.
 
     For each MODIFY review, update the corresponding edit's replacement_text.
     If multiple reviewers modify the same edit, the last one wins (next review
     round can resolve disagreements).
+
+    Edits overlapping locked_regions are protected from modification —
+    their arbitration result is final.
     """
     # Build a lookup: (agent_name, edit_index) → new replacement_text
+    # Skip modifications to edits that overlap locked regions
     modifications: dict[tuple[str, int], str] = {}
     for review in reviews:
         for pr in review.proposal_reviews:
             if pr.verdict == "MODIFY" and pr.modified_replacement is not None:
+                if locked_regions and file_contents:
+                    orig_proposal = next(
+                        (p for p in proposals if p.agent_name == pr.original_agent), None,
+                    )
+                    if (orig_proposal
+                            and pr.edit_index < len(orig_proposal.edits)
+                            and _edit_overlaps_locked(
+                                orig_proposal.edits[pr.edit_index],
+                                file_contents, locked_regions)):
+                        continue
                 modifications[(pr.original_agent, pr.edit_index)] = (
                     pr.modified_replacement
                 )
@@ -1118,6 +1151,10 @@ async def run_iteration_loop(
     consensus = False
     stalled = False
 
+    # Regions resolved by arbitration — no further changes allowed.
+    # Maps file → list of (start, end) position ranges in the original text.
+    locked_regions: dict[str, list[tuple[int, int]]] = {}
+
     # Track the best (highest approval) proposals seen
     best_proposals = current_proposals
     best_approvals = 0
@@ -1188,6 +1225,14 @@ async def run_iteration_loop(
                                 rationale=edit.rationale,
                             )
 
+                # Lock arbitrated regions — no further modifications allowed
+                for ar in arb_results:
+                    pos = file_contents.get(ar.file, "").find(ar.original_text)
+                    if pos >= 0:
+                        locked_regions.setdefault(ar.file, []).append(
+                            (pos, pos + len(ar.original_text))
+                        )
+
                 if on_phase:
                     on_phase("arbitration_done", arb_results)
 
@@ -1198,8 +1243,30 @@ async def run_iteration_loop(
             stalled = True
             break
 
-        # Merge modifications for next round
-        current_proposals = merge_proposals(current_proposals, reviews)
+        # Merge modifications for next round (locked regions are protected)
+        current_proposals = merge_proposals(
+            current_proposals, reviews, locked_regions, file_contents,
+        )
+
+        # If an agent's only modifications targeted locked regions, they
+        # effectively approved — update their review for consensus counting.
+        if locked_regions:
+            for review in reviews:
+                if review.all_approved or review.error:
+                    continue
+                has_unlocked_mod = False
+                for pr in review.proposal_reviews:
+                    if pr.verdict != "MODIFY":
+                        continue
+                    orig = next((p for p in current_proposals if p.agent_name == pr.original_agent), None)
+                    if orig and pr.edit_index < len(orig.edits):
+                        if not _edit_overlaps_locked(
+                            orig.edits[pr.edit_index], file_contents, locked_regions,
+                        ):
+                            has_unlocked_mod = True
+                            break
+                if not has_unlocked_mod:
+                    review.all_approved = True
 
         # Re-validate after merge
         for proposal in current_proposals:
