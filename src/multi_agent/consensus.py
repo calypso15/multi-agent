@@ -254,6 +254,7 @@ async def _spawn_claude(
 
     result_json: dict[str, Any] | None = None
     all_lines: list[str] = []
+    seen_tool_ids: set[str] = set()
 
     # Read stdout line by line for streaming events
     while True:
@@ -273,12 +274,21 @@ async def _spawn_claude(
         event_type = event.get("type", "")
 
         if event_type == "assistant" and on_tool_use:
+            # assistant events contain cumulative content — only report new tool calls
             content = event.get("message", {}).get("content", [])
             for item in content:
                 if item.get("type") == "tool_use":
+                    tool_id = item.get("id")
+                    if tool_id is None:
+                        # No ID on this block — use (name, input) as a fallback key
+                        tool_name = item.get("name", "unknown")
+                        tool_input = item.get("input", {})
+                        tool_id = f"{tool_name}:{json.dumps(tool_input, sort_keys=True)}"
+                    if tool_id in seen_tool_ids:
+                        continue
+                    seen_tool_ids.add(tool_id)
                     tool_name = item.get("name", "unknown")
                     tool_input = item.get("input", {})
-                    # Build a short summary of the tool call
                     summary = _summarize_tool_call(tool_name, tool_input)
                     on_tool_use(tool_name, summary)
 
@@ -1281,8 +1291,9 @@ async def run_iteration_loop(
 
     merge_result = merge_agent_edits(file_contents, current_proposals)
 
-    # 8a. Arbitrate any merge conflicts
-    if merge_result.failed_patches:
+    # 8a. Arbitrate any merge conflicts (skip if consensus — agents already
+    #     approved each other's work, overlaps just need mechanical resolution)
+    if merge_result.failed_patches and not consensus:
         # Match each failed patch to the overlapping edit from another agent
         contested: list[ContestedEdit] = []
         for fp in merge_result.failed_patches:
