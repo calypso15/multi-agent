@@ -5,54 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-REVIEW_OUTPUT_FORMAT = json.dumps({
-    "type": "json_schema",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "verdict": {
-                "type": "string",
-                "enum": ["APPROVE", "REQUEST_CHANGES"],
-            },
-            "summary": {
-                "type": "string",
-                "description": "One-paragraph summary of the review.",
-            },
-            "issues": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "severity": {
-                            "type": "string",
-                            "enum": ["critical", "major", "minor", "suggestion"],
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "File path where the issue was found.",
-                        },
-                        "quote": {
-                            "type": "string",
-                            "description": "Exact text from the submission that has the issue.",
-                        },
-                        "issue": {
-                            "type": "string",
-                            "description": "What is wrong.",
-                        },
-                        "suggestion": {
-                            "type": "string",
-                            "description": "How to fix it.",
-                        },
-                    },
-                    "required": ["severity", "issue", "suggestion"],
-                },
-            },
-        },
-        "required": ["verdict", "summary", "issues"],
-    },
-})
-
-
 SCIENTIFIC_RIGOR_PROMPT = """\
 You are the Scientific Rigor Reviewer for a hard science fiction universe set on Earth, \
 post-First Contact with an alien civilization.
@@ -379,7 +331,7 @@ Be concise (2-4 sentences). State your most important concern and why \
 the user should be cautious about accepting the proposed changes. Focus on \
 the single most critical issue from your specialty perspective.
 
-Return your response as a plain text string (NOT JSON). Just write your opinion.
+Return your response as JSON with a single "opinion" field containing your dissent.
 """
 
 DISSENT_OUTPUT_FORMAT = json.dumps({
@@ -467,7 +419,10 @@ def build_agent_system_prompt(
     return base + suffix
 
 
-_ALL_TOOLS = {"Bash", "Read", "Glob", "Grep", "Edit", "Write", "Agent", "Skill", "ToolSearch"}
+KNOWN_TOOLS = {
+    "Bash", "Read", "Glob", "Grep", "Edit", "Write",
+    "Agent", "Skill", "ToolSearch", "WebSearch", "WebFetch",
+}
 
 
 def build_cli_args(
@@ -497,7 +452,7 @@ def build_cli_args(
     # Read is always available so agents can explore canon files.
     # All other tools are disabled unless explicitly in allowed_tools.
     effective_tools = {"Read"} | set(allowed_tools or [])
-    disallowed = _ALL_TOOLS - effective_tools
+    disallowed = KNOWN_TOOLS - effective_tools
     if disallowed:
         args.extend(["--disallowedTools", ",".join(sorted(disallowed))])
     args.extend(["--allowedTools", ",".join(sorted(effective_tools))])

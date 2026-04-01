@@ -9,6 +9,7 @@ description = "Multi-agent consensus system for collaborative fiction worldbuild
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.0",
+    "diff-match-patch>=20230430",
     "rich>=13.0",
 ]
 

@@ -26,7 +26,6 @@ from multi_agent.output import (
     print_no_files,
     print_progress,
     print_proposals_summary,
-    print_results,
     print_review_round,
     print_token_usage,
 )
@@ -89,7 +88,7 @@ def _run_iteration_and_present(
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
     from multi_agent.consensus import run_iteration_loop
-    from multi_agent.context import apply_edits, build_diff_preview
+    from multi_agent.context import apply_merged_texts, build_diff_preview_from_merged
 
     def on_phase(event, *args):
         if event == "propose_done":
@@ -114,7 +113,7 @@ def _run_iteration_and_present(
     ))
 
     # No edits?
-    if not result.final_edits:
+    if not result.merged_texts:
         print_no_edits()
         print_token_usage(result.total_usage, result.total_duration_seconds)
         return 0
@@ -126,7 +125,7 @@ def _run_iteration_and_present(
         if path.is_file():
             file_contents[f] = path.read_text()
 
-    diff_text = build_diff_preview(result.final_edits, file_contents)
+    diff_text = build_diff_preview_from_merged(result.merged_texts, file_contents)
 
     # Consensus status
     if result.consensus_reached:
@@ -168,7 +167,7 @@ def _run_iteration_and_present(
         return 1
 
     if print_confirmation_prompt():
-        modified = apply_edits(repo_root, result.final_edits)
+        modified = apply_merged_texts(repo_root, result.merged_texts)
         print_changes_applied(modified)
         if hook_mode:
             console.print(

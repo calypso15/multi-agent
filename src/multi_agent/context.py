@@ -155,24 +155,6 @@ def count_uncommitted_canon(
     return count
 
 
-_REVIEW_INSTRUCTIONS = (
-    "\n# YOUR TASK\n"
-    "Review the content above according to your specialty. "
-    "Use the Read tool to examine any canon files relevant to your review.\n\n"
-    "Return your structured verdict as JSON with:\n"
-    '- "verdict": "APPROVE" or "REQUEST_CHANGES"\n'
-    '- "summary": one-paragraph summary of your review\n'
-    '- "issues": array of issues found (even if approving, note minor items)\n\n'
-    "Each issue should have:\n"
-    '- "severity": "critical", "major", "minor", or "suggestion"\n'
-    '- "file": which file (if applicable)\n'
-    '- "quote": the exact text with the issue\n'
-    '- "issue": what is wrong\n'
-    '- "suggestion": how to fix it\n\n'
-    "APPROVE if no critical or major issues. "
-    "REQUEST_CHANGES if any critical or major issue exists.\n"
-)
-
 
 def _canon_section(canon: dict[str, str]) -> str:
     """Build the canon context section of a prompt.
@@ -195,58 +177,6 @@ def _canon_section(canon: dict[str, str]) -> str:
     return "".join(parts)
 
 
-def build_review_prompt(
-    staged_diff: str,
-    staged_file_contents: dict[str, str],
-    canon: dict[str, str],
-) -> str:
-    """Assemble the review prompt for staged changes."""
-    parts: list[str] = [_canon_section(canon)]
-
-    parts.append("\n# NEW/CHANGED CONTENT\n")
-    parts.append("These are the files being submitted for review.\n")
-    for path, content in sorted(staged_file_contents.items()):
-        parts.append(f"\n## {path}\n```\n{content}\n```\n")
-
-    parts.append("\n# DIFF\n")
-    parts.append("The exact changes being made:\n")
-    parts.append(f"```diff\n{staged_diff}\n```\n")
-
-    parts.append(_REVIEW_INSTRUCTIONS)
-    return "".join(parts)
-
-
-def build_file_review_prompt(
-    target_files: list[str],
-    canon_files: list[str],
-) -> str:
-    """Assemble the review prompt for existing files.
-
-    Instead of inlining all content (which can be huge), we list the file
-    paths and instruct agents to read them using their tools.
-    """
-    parts: list[str] = []
-
-    if canon_files:
-        other_canon = sorted(set(canon_files) - set(target_files))
-        if other_canon:
-            parts.append("# EXISTING CANON\n")
-            parts.append("These files form the established universe "
-                          "for cross-reference:\n\n")
-            for path in other_canon:
-                parts.append(f"- {path}\n")
-    else:
-        parts.append("# EXISTING CANON\n")
-        parts.append("No prior canon exists yet. Focus on internal consistency.\n")
-
-    parts.append("\n# FILES TO REVIEW\n")
-    parts.append("Review the following files according to your specialty.\n\n")
-    for path in sorted(target_files):
-        parts.append(f"- {path}\n")
-
-    parts.append(_REVIEW_INSTRUCTIONS)
-    return "".join(parts)
-
 
 # --- Propose / Review prompt builders ---
 
@@ -255,17 +185,9 @@ _SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
 
 def _propose_instructions(min_severity: str, task: str | None = None) -> str:
     """Build propose instructions with severity threshold and optional task."""
-    if task in ("expand", "contract"):
-        # For expand/contract, severity filtering doesn't apply — the
+    if task in ("expand", "contract", "custom"):
+        # For task modes, severity filtering doesn't apply — the
         # system prompt already describes the goal.
-        return (
-            "\n# YOUR TASK\n"
-            "Apply the task described in your system prompt to the content above. "
-            "Use the Read tool to examine any canon files relevant to your review.\n\n"
-            "Return your response as JSON.\n"
-        )
-
-    if task == "custom":
         return (
             "\n# YOUR TASK\n"
             "Apply the task described in your system prompt to the content above. "
@@ -357,14 +279,33 @@ def build_review_round_prompt(
 
 
 def _apply_edits_to_text(content: str, edits: list[FileEdit]) -> str:
-    """Apply edits to a string using sequential str.replace.
+    """Apply a single agent's edits to text.
 
-    This is the single implementation used by both apply_edits and
-    build_diff_preview to ensure the preview always matches the result.
+    Locates each edit by position, sorts, and applies back-to-front so
+    earlier replacements don't shift later positions. Used internally by
+    the merge module to build per-agent file versions.
     """
+    located: list[tuple[int, int, str]] = []
     for edit in edits:
-        content = content.replace(edit.original_text, edit.replacement_text, 1)
+        pos = content.find(edit.original_text)
+        if pos < 0:
+            continue
+        located.append((pos, pos + len(edit.original_text), edit.replacement_text))
+
+    located.sort(key=lambda t: t[0])
+
+    for start, end, replacement in reversed(located):
+        content = content[:start] + replacement + content[end:]
+
     return content
+
+
+def _group_edits_by_file(edits: list[FileEdit]) -> dict[str, list[FileEdit]]:
+    """Group edits by their target file path."""
+    by_file: dict[str, list[FileEdit]] = {}
+    for edit in edits:
+        by_file.setdefault(edit.file, []).append(edit)
+    return by_file
 
 
 def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
@@ -372,12 +313,8 @@ def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
 
     Returns list of modified file paths.
     """
-    edits_by_file: dict[str, list[FileEdit]] = {}
-    for edit in edits:
-        edits_by_file.setdefault(edit.file, []).append(edit)
-
     modified = []
-    for filepath, file_edits in sorted(edits_by_file.items()):
+    for filepath, file_edits in sorted(_group_edits_by_file(edits).items()):
         full_path = repo_root / filepath
         content = full_path.read_text()
         content = _apply_edits_to_text(content, file_edits)
@@ -389,9 +326,7 @@ def apply_edits(repo_root: Path, edits: list[FileEdit]) -> list[str]:
 
 def build_diff_preview(edits: list[FileEdit], file_contents: dict[str, str]) -> str:
     """Generate a unified diff preview of what edits would produce."""
-    edits_by_file: dict[str, list[FileEdit]] = {}
-    for edit in edits:
-        edits_by_file.setdefault(edit.file, []).append(edit)
+    edits_by_file = _group_edits_by_file(edits)
 
     diff_parts = []
     for filepath in sorted(edits_by_file.keys()):
@@ -407,3 +342,37 @@ def build_diff_preview(edits: list[FileEdit], file_contents: dict[str, str]) -> 
         diff_parts.append("".join(diff))
 
     return "\n".join(part for part in diff_parts if part)
+
+
+def build_diff_preview_from_merged(
+    merged_texts: dict[str, str],
+    file_contents: dict[str, str],
+) -> str:
+    """Generate a unified diff preview from pre-merged texts."""
+    diff_parts = []
+    for filepath in sorted(merged_texts.keys()):
+        original = file_contents.get(filepath, "")
+        modified = merged_texts[filepath]
+        if original == modified:
+            continue
+        diff = difflib.unified_diff(
+            original.splitlines(keepends=True),
+            modified.splitlines(keepends=True),
+            fromfile=f"a/{filepath}",
+            tofile=f"b/{filepath}",
+        )
+        diff_parts.append("".join(diff))
+    return "\n".join(part for part in diff_parts if part)
+
+
+def apply_merged_texts(
+    repo_root: Path,
+    merged_texts: dict[str, str],
+) -> list[str]:
+    """Write merged texts to disk. Returns list of modified file paths."""
+    modified = []
+    for filepath in sorted(merged_texts.keys()):
+        full_path = repo_root / filepath
+        full_path.write_text(merged_texts[filepath])
+        modified.append(filepath)
+    return modified

@@ -17,12 +17,6 @@ HOOK_SCRIPT = f"""\
 
 PYTHON="{{python_path}}"
 
-# Check if any text files are staged
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\\.(md|txt)$')
-if [ -z "$STAGED_FILES" ]; then
-    exit 0
-fi
-
 # Check that multi_agent is available
 if ! "$PYTHON" -c "import multi_agent" 2>/dev/null; then
     echo "Error: multi_agent package not found." >&2

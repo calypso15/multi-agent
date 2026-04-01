@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _field_names(cls: type) -> set[str]:
+    """Return the set of field names for a dataclass."""
+    return {f.name for f in dataclasses.fields(cls)}
 
 
 @dataclass
@@ -83,32 +89,51 @@ def load_config(
 
     if "general" in raw:
         g = raw["general"]
-        for fld in (
-            "file_patterns", "consensus_threshold",
-            "timeout_seconds", "canon_directories", "max_canon_size_kb",
-            "max_rounds", "min_severity",
-            "propose_max_turns", "review_max_turns",
-        ):
+        valid = _field_names(GeneralConfig)
+        unknown = set(g.keys()) - valid
+        if unknown:
+            raise ValueError(
+                f"Unknown key(s) in [general]: {', '.join(sorted(unknown))}"
+            )
+        for fld in valid:
             if fld in g:
                 setattr(config.general, fld, g[fld])
 
     if "agents" in raw:
+        valid = _field_names(AgentConfig)
         for name, agent_raw in raw["agents"].items():
+            unknown = set(agent_raw.keys()) - valid
+            if unknown:
+                raise ValueError(
+                    f"Unknown key(s) in [agents.{name}]: "
+                    f"{', '.join(sorted(unknown))}"
+                )
             agent_cfg = AgentConfig(
-                enabled=agent_raw.get("enabled", True),
-                propose_model=agent_raw.get("propose_model"),
-                review_model=agent_raw.get("review_model"),
-                system_prompt_override=agent_raw.get("system_prompt_override"),
-                allowed_tools=agent_raw.get("allowed_tools", []),
-                propose_max_turns=agent_raw.get("propose_max_turns"),
-                review_max_turns=agent_raw.get("review_max_turns"),
+                **{k: v for k, v in agent_raw.items() if k in valid}
             )
             config.agents[name] = agent_cfg
 
     if "tasks" in raw:
+        valid = _field_names(TaskConfig)
         for name, task_raw in raw["tasks"].items():
+            unknown = set(task_raw.keys()) - valid
+            if unknown:
+                raise ValueError(
+                    f"Unknown key(s) in [tasks.{name}]: "
+                    f"{', '.join(sorted(unknown))}"
+                )
             config.tasks[name] = TaskConfig(
-                prompt=task_raw.get("prompt", ""),
+                **{k: v for k, v in task_raw.items() if k in valid}
+            )
+
+    from multi_agent.agents import KNOWN_TOOLS
+
+    for name, agent_cfg in config.agents.items():
+        invalid = set(agent_cfg.allowed_tools) - KNOWN_TOOLS
+        if invalid:
+            raise ValueError(
+                f"Unknown tool(s) in [agents.{name}].allowed_tools: "
+                f"{', '.join(sorted(invalid))}"
             )
 
     enabled_count = sum(1 for a in config.agents.values() if a.enabled)
