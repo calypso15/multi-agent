@@ -48,6 +48,10 @@ class GeneralConfig:
 class CommandConfig:
     prompt: str = ""
     description: str = ""
+    agents: list[str] = field(default_factory=list)
+    consensus_threshold: int | None = None
+    propose_model: str | None = None
+    review_model: str | None = None
 
 
 # Default review command, used when absent from TOML.
@@ -200,10 +204,32 @@ def load_config(
     if "review" not in config.commands:
         config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
 
+    enabled_agents = {k for k, v in config.agents.items() if v.enabled}
     for name, cmd_cfg in config.commands.items():
         if not cmd_cfg.prompt:
             raise ValueError(
                 f"Command '{name}' is missing required 'prompt' field"
             )
+        if cmd_cfg.agents:
+            unknown = set(cmd_cfg.agents) - set(config.agents.keys())
+            if unknown:
+                raise ValueError(
+                    f"Command '{name}' references unknown agent(s): "
+                    f"{', '.join(sorted(unknown))}"
+                )
+            disabled = set(cmd_cfg.agents) - enabled_agents
+            if disabled:
+                raise ValueError(
+                    f"Command '{name}' references disabled agent(s): "
+                    f"{', '.join(sorted(disabled))}"
+                )
+        if cmd_cfg.consensus_threshold is not None:
+            agent_count = len(cmd_cfg.agents) if cmd_cfg.agents else enabled_count
+            if cmd_cfg.consensus_threshold > agent_count:
+                raise ValueError(
+                    f"Command '{name}' consensus_threshold "
+                    f"({cmd_cfg.consensus_threshold}) exceeds its "
+                    f"agent count ({agent_count})"
+                )
 
     return config

@@ -193,7 +193,18 @@ Agents are fully defined in the TOML file. You can add, remove, or customize any
 
 ### Commands
 
-Define commands in `multi_agent.toml` under `[commands.<name>]`. Each command needs a `prompt` describing the task for agents, and an optional `description` for `--help` text. Commands become available both as top-level CLI commands and via `review --task`.
+Define commands in `multi_agent.toml` under `[commands.<name>]`. Each command needs a `prompt` describing the task for agents. Commands become available both as top-level CLI commands and via `review --task`.
+
+| Option | Default | Description |
+|---|---|---|
+| `prompt` | **required** | Task instructions for agents |
+| `description` | — | Shown in `--help` output |
+| `agents` | all enabled | Subset of agents to use (list of agent keys) |
+| `consensus_threshold` | inherits from general | Override consensus threshold for this command |
+| `propose_model` | — | Override agent models for the propose phase |
+| `review_model` | — | Override agent models for review/dissent phases |
+
+Model precedence: command model > agent model > CLI/env default.
 
 ```toml
 [commands.review]
@@ -202,9 +213,11 @@ prompt = "Review the submitted content from your specialty perspective and propo
 
 [commands.expand]
 description = "Expand files with richer detail via consensus"
+propose_model = "claude-sonnet-4-6"
 prompt = "Your goal is to enrich the submitted content. Add vivid descriptions, flesh out thin scenes..."
 
 [commands.deepen-characters]
+agents = ["canon_continuity", "sociopolitical"]
 prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive."
 ```
 

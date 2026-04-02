@@ -41,13 +41,27 @@ class ConfigGroup(click.Group):
         if cache is not None:
             return cache
         try:
+            # ctx.params may not have repo_path yet because --help is
+            # eager and fires before non-eager options are resolved.
             repo = ctx.params.get("repo_path") if ctx.params else None
+            if repo is None:
+                repo = self._repo_from_argv()
             search = Path(repo) if repo else None
             config = load_config(search_from=search)
             ctx.meta["_toml_commands"] = config.commands
         except Exception:
             ctx.meta["_toml_commands"] = {}
         return ctx.meta["_toml_commands"]
+
+    @staticmethod
+    def _repo_from_argv() -> str | None:
+        """Extract --repo value from sys.argv as a fallback."""
+        import sys
+        args = sys.argv[1:]
+        for i, arg in enumerate(args):
+            if arg == "--repo" and i + 1 < len(args):
+                return args[i + 1]
+        return None
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         builtin = set(super().list_commands(ctx))
@@ -146,6 +160,8 @@ def _run_iteration_and_present(
     command_name: str | None = None,
     command_prompt: str | None = None,
     severity_filter: bool = True,
+    command_propose_model: str | None = None,
+    command_review_model: str | None = None,
     task_label: str | None = None,
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
@@ -181,6 +197,8 @@ def _run_iteration_and_present(
         config, str(repo_root), target_files=target_files,
         command_name=command_name, command_prompt=command_prompt,
         severity_filter=severity_filter,
+        command_propose_model=command_propose_model,
+        command_review_model=command_review_model,
         on_progress=print_progress,
         on_phase=on_phase,
     ))
@@ -309,6 +327,21 @@ def _review_common(
 
     command_prompt = cmd_config.prompt
 
+    # Apply per-command agent filtering and consensus_threshold.
+    if cmd_config.agents or cmd_config.consensus_threshold is not None:
+        agents = (
+            {k: v for k, v in config.agents.items() if k in cmd_config.agents}
+            if cmd_config.agents else config.agents
+        )
+        threshold = cmd_config.consensus_threshold or config.general.consensus_threshold
+        threshold = min(threshold, len(agents))
+        config = dataclasses.replace(
+            config,
+            agents=agents,
+            general=dataclasses.replace(config.general, consensus_threshold=threshold),
+        )
+        init_agent_styles(config.agents)
+
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
         count_uncommitted_canon,
@@ -360,6 +393,8 @@ def _review_common(
         command_name=cmd_name,
         command_prompt=command_prompt,
         severity_filter=severity_filter,
+        command_propose_model=cmd_config.propose_model,
+        command_review_model=cmd_config.review_model,
         task_label=task_label,
     )
     sys.exit(exit_code)
