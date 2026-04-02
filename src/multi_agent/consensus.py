@@ -21,7 +21,7 @@ from multi_agent.context import (
     get_staged_content,
     get_staged_diff,
     get_staged_files,
-    load_canon,
+    load_reference,
 )
 from multi_agent.models import (
     AgentProposal,
@@ -337,7 +337,7 @@ async def _run_single_dissenter(
 async def run_propose_phase(
     config: MultiAgentConfig,
     file_contents: dict[str, str],
-    canon: dict[str, str],
+    reference: dict[str, str],
     staged_diff: str | None,
     repo_root: str,
     command_name: str | None = None,
@@ -348,7 +348,7 @@ async def run_propose_phase(
 ) -> list[AgentProposal]:
     """Run all enabled agents in propose mode (sequentially)."""
     propose_prompt = build_propose_prompt(
-        file_contents, canon, staged_diff,
+        file_contents, reference, staged_diff,
         min_severity=config.general.min_severity,
         severity_filter=severity_filter,
     )
@@ -440,7 +440,7 @@ async def run_review_phase(
     config: MultiAgentConfig,
     proposals: list[AgentProposal],
     file_contents: dict[str, str],
-    canon: dict[str, str],
+    reference: dict[str, str],
     repo_root: str,
     round_number: int,
     on_progress: Callable[[str, str], None] | None = None,
@@ -478,7 +478,7 @@ async def run_review_phase(
             continue
 
         review_prompt = build_review_round_prompt(
-            other_proposals, file_contents, canon, round_number,
+            other_proposals, file_contents, reference, round_number,
             display_names=display_names,
         )
         system_prompt = build_agent_system_prompt(
@@ -793,19 +793,19 @@ async def run_iteration_loop(
             file_contents[f] = (root / f).read_text()
         files_reviewed = list(target_files)
 
-    # 2. Load canon
-    canon = load_canon(
+    # 2. Load reference files
+    reference = load_reference(
         root,
-        config.general.canon_directories,
+        config.general.reference_directories,
         config.general.file_patterns,
-        config.general.max_canon_size_kb,
+        config.general.max_reference_size_kb,
     )
 
     # 3. Propose phase
     total_usage = TokenUsage()
 
     proposals = await run_propose_phase(
-        config, file_contents, canon, staged_diff, repo_root,
+        config, file_contents, reference, staged_diff, repo_root,
         command_name=command_name, command_prompt=command_prompt,
         severity_filter=severity_filter,
         command_propose_model=command_propose_model,
@@ -865,7 +865,7 @@ async def run_iteration_loop(
 
     for round_num in range(config.general.max_rounds):
         reviews = await run_review_phase(
-            config, current_proposals, file_contents, canon,
+            config, current_proposals, file_contents, reference,
             repo_root, round_num, on_progress,
             previous_reviews=previous_reviews,
             display_names=display_names,

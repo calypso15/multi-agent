@@ -36,8 +36,8 @@ class GeneralConfig:
     file_patterns: list[str] = field(default_factory=lambda: ["*.md", "*.txt"])
     consensus_threshold: int = 2
     timeout_seconds: int = 600
-    canon_directories: list[str] = field(default_factory=lambda: ["canon"])
-    max_canon_size_kb: int = 500
+    reference_directories: list[str] = field(default_factory=lambda: ["reference"])
+    max_reference_size_kb: int = 500
     max_rounds: int = 3
     min_severity: str = "minor"
     propose_max_turns: int = 0  # 0 = unlimited (no --max-turns flag)

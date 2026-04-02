@@ -67,34 +67,34 @@ def _print_errors(
 
 def print_header(
     files: list[str],
-    canon_count: int,
-    canon_size_kb: float,
-    uncommitted_canon: int = 0,
+    ref_count: int,
+    ref_size_kb: float,
+    uncommitted_ref: int = 0,
     task: str | None = None,
 ) -> None:
     """Print the review header showing what's being reviewed."""
     file_list = ", ".join(files)
     task_label = f"  [bold cyan]Task: {task}[/bold cyan]" if task else ""
     lines = [f"Reviewing {len(files)} file(s): {file_list}{task_label}"]
-    if canon_count > 0:
-        canon_line = f"Canon context: {canon_count} file(s) ({canon_size_kb:.0f} KB)"
-        if uncommitted_canon > 0:
-            canon_line += (
-                f" [yellow]({uncommitted_canon} uncommitted file(s) "
+    if ref_count > 0:
+        ref_line = f"Reference context: {ref_count} file(s) ({ref_size_kb:.0f} KB)"
+        if uncommitted_ref > 0:
+            ref_line += (
+                f" [yellow]({uncommitted_ref} uncommitted file(s) "
                 "not included — commit to add as context)[/yellow]"
             )
-        lines.append(canon_line)
-    elif uncommitted_canon > 0:
+        lines.append(ref_line)
+    elif uncommitted_ref > 0:
         lines.append(
-            f"Canon context: none [yellow]({uncommitted_canon} uncommitted "
+            f"Reference context: none [yellow]({uncommitted_ref} uncommitted "
             "file(s) found — commit them to use as context)[/yellow]"
         )
     else:
-        lines.append("Canon context: none (first contribution)")
+        lines.append("Reference context: none")
 
     console.print(Panel(
         "\n".join(lines),
-        title="Multi-Agent Fiction Review",
+        title="Multi-Agent Review",
         border_style="blue",
     ))
 

@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Multi-agent consensus review system for collaborative fiction. Agents are defined in `multi_agent.toml` (not in Python source). The system spawns Claude CLI subprocesses to run each agent.
+Multi-agent consensus review system. Agents are defined in `multi_agent.toml` (not in Python source). The system spawns Claude CLI subprocesses to run each agent.
 
 ## Commands
 
@@ -14,10 +14,10 @@ python -m multi_agent check-config   # validate config (needs --repo or a multi_
 
 ## Architecture
 
-- **`config.py`** — TOML loading, `AgentConfig`/`GeneralConfig`/`CommandConfig` dataclasses, validation. Agents are defined via `[agents.<name>]` blocks, commands via `[commands.<name>]` blocks. `DEFAULT_COMMANDS` provides fallback review/expand/contract. `get_display_name()` derives display names.
+- **`config.py`** — TOML loading, `AgentConfig`/`GeneralConfig`/`CommandConfig` dataclasses, validation. Agents are defined via `[agents.<name>]` blocks, commands via `[commands.<name>]` blocks. `DEFAULT_REVIEW_COMMAND` provides a fallback review command. `get_display_name()` derives display names.
 - **`agents.py`** — Internal mode suffixes (review/dissent), `build_command_mode_suffix()` for TOML-defined commands, JSON output schemas, `build_agent_system_prompt()`, `build_cli_args()`, `build_name_normalizer()`. No agent-specific content — all generic.
 - **`consensus.py`** — Orchestration: propose phase, review phase, iteration loop, arbitration, dissent collection. Agents run sequentially via `claude_runner.run_agent()`.
-- **`context.py`** — Builds user prompts (file contents, canon listing, review round proposals). Separate from system prompts.
+- **`context.py`** — Builds user prompts (file contents, reference file listing, review round proposals). Separate from system prompts.
 - **`models.py`** — Dataclasses (`FileEdit`, `AgentProposal`, `AgentReviewResponse`, etc.), JSON parsing, path sanitization.
 - **`output.py`** — Rich terminal formatting. Call `init_agent_styles(config.agents)` after loading config to set up display names and colors.
 - **`merge.py`** — N-way edit merging via diff-match-patch.

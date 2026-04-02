@@ -116,7 +116,7 @@ def _make_toml_command(cmd_name: str, cmd_config: CommandConfig) -> click.Comman
               help="Path to a git repository to review. Defaults to current directory.")
 @click.pass_context
 def main(ctx: click.Context, repo_path: str | None) -> None:
-    """Multi-agent consensus reviewer for collaborative fiction."""
+    """Multi-agent consensus review system."""
     ctx.ensure_object(dict)
     ctx.obj["repo_path"] = repo_path
 
@@ -152,9 +152,9 @@ def _run_iteration_and_present(
     repo_root: Path,
     target_files: list[str] | None,
     files_display: list[str],
-    canon_count: int,
-    canon_size_kb: float,
-    uncommitted_canon: int,
+    ref_count: int,
+    ref_size_kb: float,
+    uncommitted_ref: int,
     dry_run: bool,
     hook_mode: bool,
     command_name: str | None = None,
@@ -191,7 +191,7 @@ def _run_iteration_and_present(
                 print_dissents(dissents)
 
     display_task = task_label or command_name
-    print_header(files_display, canon_count, canon_size_kb, uncommitted_canon, task=display_task)
+    print_header(files_display, ref_count, ref_size_kb, uncommitted_ref, task=display_task)
 
     result = asyncio.run(run_iteration_loop(
         config, str(repo_root), target_files=target_files,
@@ -344,9 +344,9 @@ def _review_common(
 
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
-        count_uncommitted_canon,
+        count_uncommitted_reference,
         get_staged_files,
-        load_canon,
+        load_reference,
     )
 
     # If files provided, review those files. Otherwise review staged files.
@@ -366,18 +366,18 @@ def _review_common(
         target_files = None  # signals: use staged files
         files_display = [str(f) for f in staged]
 
-    canon = load_canon(
+    ref = load_reference(
         repo_root,
-        config.general.canon_directories,
+        config.general.reference_directories,
         config.general.file_patterns,
-        config.general.max_canon_size_kb,
+        config.general.max_reference_size_kb,
     )
-    canon_size_kb = sum(len(v.encode()) for v in canon.values()) / 1024
-    uncommitted = count_uncommitted_canon(
+    ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
+    uncommitted = count_uncommitted_reference(
         repo_root,
-        config.general.canon_directories,
+        config.general.reference_directories,
         config.general.file_patterns,
-        set(canon.keys()),
+        set(ref.keys()),
     )
 
     exit_code = _run_iteration_and_present(
@@ -385,9 +385,9 @@ def _review_common(
         repo_root=repo_root,
         target_files=target_files,
         files_display=files_display,
-        canon_count=len(canon),
-        canon_size_kb=canon_size_kb,
-        uncommitted_canon=uncommitted,
+        ref_count=len(ref),
+        ref_size_kb=ref_size_kb,
+        uncommitted_ref=uncommitted,
         dry_run=dry_run,
         hook_mode=hook_mode,
         command_name=cmd_name,
@@ -432,9 +432,9 @@ def review(
 
     \b
     Examples:
-        multi-agent review canon/chapter-01.md
-        multi-agent review --task expand canon/chapter-03.md
-        multi-agent review --prompt "Add epigraphs to each section" canon/
+        multi-agent review chapter-01.md
+        multi-agent review --task expand chapter-03.md
+        multi-agent review --prompt "Add epigraphs to each section" docs/
         multi-agent review                  # reviews staged files
     """
     _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name, prompt)
@@ -502,7 +502,7 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
     console.print(f"  Min severity: {config.general.min_severity}")
     console.print(f"  Propose max turns: {config.general.propose_max_turns}")
     console.print(f"  Review max turns: {config.general.review_max_turns}")
-    console.print(f"  Canon directories: {config.general.canon_directories}")
+    console.print(f"  Reference directories: {config.general.reference_directories}")
     console.print()
     console.print("[bold]Agents:[/bold]")
     for name, agent in config.agents.items():

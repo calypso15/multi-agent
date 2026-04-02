@@ -24,7 +24,7 @@ if ! "$PYTHON" -c "import multi_agent" 2>/dev/null; then
     exit 1
 fi
 
-echo "Running multi-agent fiction review..."
+echo "Running multi-agent review..."
 "$PYTHON" -m multi_agent review --hook-mode
 exit $?
 """

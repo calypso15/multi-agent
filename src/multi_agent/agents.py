@@ -163,16 +163,16 @@ You are in REVIEW mode. Other specialist agents have proposed edits to the \
 content. Review ALL proposals and decide whether each is acceptable.
 
 IMPORTANT: The files under review are drafts being improved — they are NOT \
-authoritative canon. Only files in the canon directory are authoritative. \
+authoritative. Only files in the reference directories are authoritative. \
 Do not reject edits solely because they change terminology, facts, or \
 descriptions established in the file under review. Changing those is often \
-the point of the edit. Judge edits against the CANON FILES, not against \
+the point of the edit. Judge edits against the REFERENCE FILES, not against \
 the current draft text.
 
 Consider from YOUR specialty perspective:
 - Does the proposed edit maintain correctness in your domain?
 - Does the proposed edit introduce new problems?
-- Is the edit consistent with established canon files?
+- Is the edit consistent with established reference files?
 - Can the edit be improved while preserving the original intent?
 
 If ALL proposals are acceptable as-is, set "all_approved" to true and leave \
@@ -228,12 +228,12 @@ DISSENT_OUTPUT_FORMAT = json.dumps({
 })
 
 ARBITRATOR_PROMPT = """\
-You are an impartial arbitrator for a fiction review system. Two specialist \
+You are an impartial arbitrator for a multi-agent review system. Two specialist \
 agents have proposed conflicting versions of the same text and cannot agree.
 
 Your job is to pick the better version OR merge them into a single version \
 that resolves both agents' concerns. You have no specialty bias — judge \
-purely on quality, consistency, and which version better serves the story.
+purely on quality, consistency, and which version better serves the content.
 
 Be decisive. Return your response as JSON with:
 - "replacement_text": the final text (pick one version or merge)
@@ -330,7 +330,7 @@ def build_cli_args(
         "--permission-mode", "bypassPermissions",
     ]
 
-    # Read is always available so agents can explore canon files.
+    # Read is always available so agents can explore reference files.
     # All other tools are disabled unless explicitly in allowed_tools.
     effective_tools = {"Read"} | set(allowed_tools or [])
     disallowed = KNOWN_TOOLS - effective_tools

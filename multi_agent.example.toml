@@ -1,5 +1,5 @@
-# Multi-Agent Fiction Review — Example Configuration
-# Copy this file to your fiction repository as "multi_agent.toml" and
+# Multi-Agent Review — Example Configuration
+# Copy this file to your repository as "multi_agent.toml" and
 # adjust the values to match your project structure.
 #
 # Agents are fully defined in this file. You can add, remove, or customize
@@ -18,12 +18,12 @@ consensus_threshold = 2
 # Maximum time (seconds) each agent is allowed to run
 timeout_seconds = 600
 
-# Directories containing established canon files used as review context.
+# Directories containing established reference files used as review context.
 # Agents cross-reference new content against these files.
-canon_directories = ["canon"]
+reference_directories = ["reference"]
 
-# Maximum total size (KB) of canon content loaded into agent context
-max_canon_size_kb = 500
+# Maximum total size (KB) of reference content loaded into agent context
+max_reference_size_kb = 500
 
 # Maximum propose-review iteration rounds before presenting best result
 max_rounds = 3

@@ -1,4 +1,4 @@
-"""Git diff extraction and canon loading."""
+"""Git diff extraction and reference file loading."""
 
 from __future__ import annotations
 
@@ -78,13 +78,13 @@ def get_staged_content(repo_root: Path, filepath: Path) -> str:
     return result.stdout
 
 
-def load_canon(
+def load_reference(
     repo_root: Path,
     directories: list[str],
     patterns: list[str],
     max_size_kb: int = 500,
 ) -> dict[str, str]:
-    """Load committed canon files for context.
+    """Load committed reference files for context.
 
     Returns {relative_path: file_contents} for all matching files
     in the specified directories. Reads the HEAD versions (committed state).
@@ -92,7 +92,7 @@ def load_canon(
     if not _has_commits(repo_root):
         return {}
 
-    canon: dict[str, str] = {}
+    reference: dict[str, str] = {}
     total_size = 0
     max_bytes = max_size_kb * 1024
 
@@ -104,12 +104,12 @@ def load_canon(
     tracked_files = sorted(result.stdout.strip().splitlines())
 
     for filepath in tracked_files:
-        # Check if file is in a canon directory
-        in_canon_dir = any(
+        # Check if file is in a reference directory
+        in_ref_dir = any(
             filepath.startswith(d + "/") or filepath.startswith(d + "\\")
             for d in directories
         )
-        if not in_canon_dir:
+        if not in_ref_dir:
             continue
 
         # Check if file matches patterns
@@ -130,18 +130,18 @@ def load_canon(
         if total_size > max_bytes:
             break
 
-        canon[filepath] = content
+        reference[filepath] = content
 
-    return canon
+    return reference
 
 
-def count_uncommitted_canon(
+def count_uncommitted_reference(
     repo_root: Path,
     directories: list[str],
     patterns: list[str],
     committed_paths: set[str],
 ) -> int:
-    """Count files on disk in canon directories that are not committed."""
+    """Count files on disk in reference directories that are not committed."""
     count = 0
     for d in directories:
         dir_path = repo_root / d
@@ -156,23 +156,23 @@ def count_uncommitted_canon(
 
 
 
-def _canon_section(canon: dict[str, str]) -> str:
-    """Build the canon context section of a prompt.
+def _reference_section(reference: dict[str, str]) -> str:
+    """Build the reference context section of a prompt.
 
     Lists file paths and sizes instead of inlining content.
     Agents use the Read tool to explore files they consider relevant.
     """
     parts: list[str] = []
-    if canon:
-        parts.append("# EXISTING CANON (established files)\n")
-        parts.append("These files form the established universe. Use the Read "
+    if reference:
+        parts.append("# REFERENCE FILES (established context)\n")
+        parts.append("These files are the authoritative reference material. Use the Read "
                       "tool to examine any files relevant to your review.\n\n")
-        for path, content in sorted(canon.items()):
+        for path, content in sorted(reference.items()):
             size_kb = len(content.encode()) / 1024
             parts.append(f"- {path} ({size_kb:.1f} KB)\n")
     else:
-        parts.append("# EXISTING CANON\n")
-        parts.append("No prior canon exists yet. This appears to be the first "
+        parts.append("# REFERENCE FILES\n")
+        parts.append("No reference files exist yet. This appears to be the first "
                       "contribution. Focus on internal consistency.\n")
     return "".join(parts)
 
@@ -190,7 +190,7 @@ def _propose_instructions(min_severity: str, severity_filter: bool = True) -> st
         return (
             "\n# YOUR TASK\n"
             "Apply the task described in your system prompt to the content above. "
-            "Use the Read tool to examine any canon files relevant to your review.\n\n"
+            "Use the Read tool to examine any reference files relevant to your review.\n\n"
             "Return your response as JSON.\n"
         )
 
@@ -208,7 +208,7 @@ def _propose_instructions(min_severity: str, severity_filter: bool = True) -> st
     return (
         "\n# YOUR TASK\n"
         "Review the content above from your specialty perspective and propose "
-        "concrete edits. Use the Read tool to examine canon files as needed.\n"
+        "concrete edits. Use the Read tool to examine reference files as needed.\n"
         + severity_note
         + "\nReturn your response as JSON.\n"
     )
@@ -217,20 +217,20 @@ _REVIEW_ROUND_INSTRUCTIONS = (
     "\n# YOUR TASK\n"
     "Review ALL proposals above from your specialty perspective. For each edit, "
     "decide whether it is acceptable or needs modification.\n\n"
-    "Use the Read tool to examine any canon files relevant to your review.\n\n"
+    "Use the Read tool to examine any reference files relevant to your review.\n\n"
     "Return your response as JSON.\n"
 )
 
 
 def build_propose_prompt(
     file_contents: dict[str, str],
-    canon: dict[str, str],
+    reference: dict[str, str],
     staged_diff: str | None = None,
     min_severity: str = "minor",
     severity_filter: bool = True,
 ) -> str:
     """Assemble the prompt for the propose phase."""
-    parts: list[str] = [_canon_section(canon)]
+    parts: list[str] = [_reference_section(reference)]
 
     parts.append("\n# FILES FOR REVIEW\n")
     parts.append("These are the files to review and propose edits for.\n")
@@ -248,19 +248,19 @@ def build_propose_prompt(
 def build_review_round_prompt(
     proposals: list[AgentProposal],
     file_contents: dict[str, str],
-    canon: dict[str, str],
+    reference: dict[str, str],
     round_number: int,
     display_names: dict[str, str] | None = None,
 ) -> str:
     """Assemble the prompt for a review round."""
     _display_names = display_names or {}
 
-    parts: list[str] = [_canon_section(canon)]
+    parts: list[str] = [_reference_section(reference)]
 
     parts.append("\n# FILES UNDER REVIEW (drafts being improved — not authoritative)\n")
     parts.append("These files are the subject of editing. They may contain errors, "
                   "inconsistencies, or outdated terminology that the proposed edits "
-                  "aim to fix. Only files in the canon directory are authoritative.\n")
+                  "aim to fix. Only files in the reference directories are authoritative.\n")
     for path, content in sorted(file_contents.items()):
         parts.append(f"\n## {path}\n```\n{content}\n```\n")
 

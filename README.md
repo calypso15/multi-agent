@@ -1,18 +1,10 @@
-# Multi-Agent Fiction Review
+# Multi-Agent Review
 
-A consensus-based review system for collaborative fiction worldbuilding. Three specialized AI agents propose changes to your writing, review each other's proposals, and iterate until they reach agreement — then present the final edits for your approval.
-
-Built for a hard sci-fi universe set on Earth, post-First Contact. Powered by the Claude Code CLI using your existing Claude Max subscription.
+A consensus-based review system where multiple specialized AI agents propose changes to your content, review each other's proposals, and iterate until they reach agreement — then present the final edits for your approval. Powered by the Claude Code CLI using your existing Claude Max subscription.
 
 ## How It Works
 
-When you run a review (manually or via pre-commit hook), the system launches your configured specialist agents. Agents are defined entirely in `multi_agent.toml` — you can add, remove, or customize any number of them. The example config ships with three:
-
-| Agent | Focus |
-|---|---|
-| **Scientific Rigor** | Physics, biology, chemistry, technology plausibility. Ensures hard sci-fi standards. Can web-search to verify claims. |
-| **Canon Continuity** | Cross-references against all existing canon files. Catches timeline contradictions, character inconsistencies, naming errors. |
-| **Sociopolitical** | Evaluates government responses, cultural shifts, economic impacts, institutional reactions for realism. Can web-search to verify real-world references. |
+When you run a review (manually or via pre-commit hook), the system launches your configured specialist agents. Agents are defined entirely in `multi_agent.toml` — you can add, remove, or customize any number of them with different specialties (e.g., domain accuracy, style consistency, technical correctness).
 
 The review runs in phases:
 
@@ -40,23 +32,23 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Then set up your fiction repository:
+Then set up your target repository:
 
 ```bash
-# Copy the example config to your fiction repo
-cp multi_agent.example.toml ~/git/my-novel/multi_agent.toml
+# Copy the example config to your project
+cp multi_agent.example.toml ~/git/my-project/multi_agent.toml
 
 # Edit it to match your project structure
-vim ~/git/my-novel/multi_agent.toml
+vim ~/git/my-project/multi_agent.toml
 
 # Optionally install the pre-commit hook
-python -m multi_agent --repo ~/git/my-novel install-hook
+python -m multi_agent --repo ~/git/my-project install-hook
 ```
 
 Verify configuration:
 
 ```bash
-python -m multi_agent --repo ~/git/my-novel check-config
+python -m multi_agent --repo ~/git/my-project check-config
 ```
 
 ## Usage
@@ -65,16 +57,16 @@ python -m multi_agent --repo ~/git/my-novel check-config
 
 ```bash
 # Review specific files
-python -m multi_agent --repo ~/git/my-novel review canon/chapter-01.md
+python -m multi_agent --repo ~/git/my-project review src/api.py
 
 # Review a directory
-python -m multi_agent --repo ~/git/my-novel review canon/
+python -m multi_agent --repo ~/git/my-project review src/
 
 # Dry run — show proposed changes without applying
-python -m multi_agent --repo ~/git/my-novel review --dry-run canon/chapter-01.md
+python -m multi_agent --repo ~/git/my-project review --dry-run src/api.py
 
 # Review staged files (same as pre-commit hook)
-python -m multi_agent --repo ~/git/my-novel review
+python -m multi_agent --repo ~/git/my-project review
 ```
 
 ### Commands
@@ -84,13 +76,13 @@ invoked as top-level CLI commands or via `review --task`:
 
 ```bash
 # Top-level command (auto-generated from TOML)
-python -m multi_agent --repo ~/git/my-novel expand canon/chapter-03.md
+python -m multi_agent --repo ~/git/my-project expand docs/overview.md
 
 # Equivalent via --task
-python -m multi_agent --repo ~/git/my-novel review --task expand canon/chapter-03.md
+python -m multi_agent --repo ~/git/my-project review --task expand docs/overview.md
 
 # Any command defined in [commands] works the same way
-python -m multi_agent --repo ~/git/my-novel deepen-characters canon/chapter-03.md
+python -m multi_agent --repo ~/git/my-project deepen-characters docs/overview.md
 ```
 
 ### Pre-commit hook
@@ -99,21 +91,21 @@ When installed, the hook runs automatically on `git commit`. If agents propose c
 
 ```bash
 # Install
-python -m multi_agent --repo ~/git/my-novel install-hook
+python -m multi_agent --repo ~/git/my-project install-hook
 
 # Bypass when needed
 git commit --no-verify -m "Fix typo"
 
 # Uninstall
-python -m multi_agent --repo ~/git/my-novel uninstall-hook
+python -m multi_agent --repo ~/git/my-project uninstall-hook
 ```
 
 ### Example output
 
 ```
-╭─ Multi-Agent Fiction Review ─────────────────────────────────╮
-│  Reviewing 1 file(s): canon/chapter-03.md                    │
-│  Canon context: 4 file(s) (23 KB)                            │
+╭─ Multi-Agent Review ─────────────────────────────────────────╮
+│  Reviewing 1 file(s): docs/overview.md                       │
+│  Reference context: 4 file(s) (23 KB)                        │
 ╰──────────────────────────────────────────────────────────────╯
   Scientific Rigor: proposing
   Canon Continuity: proposing
@@ -123,8 +115,8 @@ python -m multi_agent --repo ~/git/my-novel uninstall-hook
   Sociopolitical: done — 0 edit(s)
 
 ──────────────────── Propose Phase ────────────────────────────
-  Scientific Rigor    1 edit(s) (canon/chapter-03.md)     8.2s
-  Canon Continuity    2 edit(s) (canon/chapter-03.md)    12.1s
+  Scientific Rigor    1 edit(s) (docs/overview.md)     8.2s
+  Canon Continuity    2 edit(s) (docs/overview.md)    12.1s
   Sociopolitical      no edits                            9.7s
 
   3 total edit(s) proposed
@@ -141,8 +133,8 @@ python -m multi_agent --repo ~/git/my-novel uninstall-hook
 
 ──────────────────── Proposed Changes ─────────────────────────
 
---- a/canon/chapter-03.md
-+++ b/canon/chapter-03.md
+--- a/docs/overview.md
++++ b/docs/overview.md
 @@ -12,7 +12,7 @@
 -The ship accelerated to 3c using conventional thrusters.
 +The ship accelerated to 0.3c using conventional thrusters.
@@ -160,7 +152,7 @@ Apply these changes? [y/N]
 
 ## Configuration
 
-Place a `multi_agent.toml` in your fiction repository. See `multi_agent.example.toml` for a fully commented example.
+Place a `multi_agent.toml` in your repository. See `multi_agent.example.toml` for a fully commented example.
 
 ### General options
 
@@ -169,8 +161,8 @@ Place a `multi_agent.toml` in your fiction repository. See `multi_agent.example.
 | `file_patterns` | `["*.md", "*.txt"]` | Glob patterns for files to review |
 | `consensus_threshold` | `2` | Minimum approvals required for consensus |
 | `timeout_seconds` | `600` | Per-agent timeout in seconds |
-| `canon_directories` | `["canon"]` | Directories containing established fiction files |
-| `max_canon_size_kb` | `500` | Max total size of canon context loaded |
+| `reference_directories` | `["reference"]` | Directories containing established reference files |
+| `max_reference_size_kb` | `500` | Max total size of reference content loaded |
 | `max_rounds` | `3` | Maximum propose-review iteration rounds |
 | `min_severity` | `"minor"` | Minimum severity for proposed edits: `"critical"`, `"major"`, `"minor"`, or `"suggestion"`. Set to `"major"` to skip nitpicks. |
 | `propose_max_turns` | `0` (unlimited) | Max turns per agent in the propose phase |
@@ -230,36 +222,27 @@ The `review` command has a built-in default and is always available even without
 file_patterns = ["*.md", "*.txt"]
 consensus_threshold = 2
 timeout_seconds = 600
-canon_directories = ["canon"]
+reference_directories = ["reference"]
 max_rounds = 5
 min_severity = "major"
 propose_max_turns = 5
 review_max_turns = 2
 
-[agents.scientific_rigor]
-enabled = true
-display_name = "Scientific Rigor"
+[agents.accuracy]
+display_name = "Accuracy"
 propose_model = "claude-sonnet-4-6"
 review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
-system_prompt = "You are the Scientific Rigor Reviewer..."
+system_prompt = "You are the Accuracy Reviewer. Verify all claims, data, and references..."
 
-[agents.canon_continuity]
-enabled = true
-display_name = "Canon Continuity"
+[agents.consistency]
+display_name = "Consistency"
 propose_model = "claude-sonnet-4-6"
 review_model = "claude-haiku-4-5-20251001"
-system_prompt = "You are the Canon Continuity Reviewer..."
+system_prompt = "You are the Consistency Reviewer. Ensure alignment with reference files..."
 
-[agents.sociopolitical]
-enabled = true
-propose_model = "claude-sonnet-4-6"
-review_model = "claude-haiku-4-5-20251001"
-allowed_tools = ["WebSearch", "WebFetch"]
-system_prompt = "You are the Sociopolitical Plausibility Reviewer..."
-
-[commands.deepen-characters]
-prompt = "Focus on deepening character voices and making dialogue more distinctive."
+[commands.simplify]
+prompt = "Simplify complex passages while preserving technical accuracy."
 ```
 
 ## CLI Reference
@@ -285,7 +268,7 @@ multi-agent [--repo PATH] check-config
 
 ```
 multi-agent/
-├── multi_agent.example.toml  # Example config (copy to your fiction repo)
+├── multi_agent.example.toml  # Example config (copy to your project repo)
 └── src/multi_agent/
     ├── models.py             # Dataclasses, typed events, parsing utilities
     ├── claude_runner.py      # Claude CLI subprocess management
