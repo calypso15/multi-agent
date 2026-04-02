@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Union
-
-from multi_agent.agents import normalize_agent_name
+from typing import Any, Callable, Union
 
 
 # --- Token usage ---
@@ -284,12 +282,15 @@ def parse_edits(raw_edits: list[dict[str, Any]]) -> list[FileEdit]:
     return edits
 
 
-def parse_proposal_reviews(raw: list[dict[str, Any]]) -> list[ProposalReview]:
+def parse_proposal_reviews(
+    raw: list[dict[str, Any]],
+    normalizer: Callable[[str], str] = lambda x: x,
+) -> list[ProposalReview]:
     """Parse proposal review dicts into ProposalReview objects."""
     reviews = []
     for item in raw:
         reviews.append(ProposalReview(
-            original_agent=normalize_agent_name(item.get("original_agent", "")),
+            original_agent=normalizer(item.get("original_agent", "")),
             edit_index=item.get("edit_index", 0),
             verdict=item.get("verdict", "APPROVE"),
             modified_replacement=item.get("modified_replacement"),

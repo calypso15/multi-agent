@@ -13,6 +13,7 @@ from multi_agent.config import load_config
 from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
+    init_agent_styles,
     print_arbitration_done,
     print_arbitration_start,
     print_changes_applied,
@@ -210,6 +211,7 @@ def _review_common(
         Path(config_path) if config_path else None,
         search_from=repo_root,
     )
+    init_agent_styles(config.agents)
     if max_rounds is not None:
         config = dataclasses.replace(
             config,
@@ -445,6 +447,10 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
         print_error(f"Invalid configuration: {exc}")
         sys.exit(1)
 
+    init_agent_styles(config.agents)
+
+    from multi_agent.config import get_display_name
+
     console.print("[bold]Configuration:[/bold]")
     console.print(f"  File patterns: {config.general.file_patterns}")
     console.print(f"  Consensus threshold: {config.general.consensus_threshold}")
@@ -457,11 +463,17 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
     console.print()
     console.print("[bold]Agents:[/bold]")
     for name, agent in config.agents.items():
+        display = get_display_name(name, agent)
         status = "[green]enabled[/green]" if agent.enabled else "[red]disabled[/red]"
         model = agent.propose_model or "default"
         review_model = agent.review_model or model
         tools = ", ".join(agent.allowed_tools) if agent.allowed_tools else "none"
-        console.print(f"  {name}: {status} (propose: {model}, review: {review_model}, tools: {tools})")
+        has_prompt = "yes" if agent.system_prompt else "[red]missing[/red]"
+        console.print(
+            f"  {display} ({name}): {status} "
+            f"(propose: {model}, review: {review_model}, "
+            f"tools: {tools}, prompt: {has_prompt})"
+        )
 
     if config.tasks:
         console.print()

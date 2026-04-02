@@ -12,9 +12,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from multi_agent.agents import AGENT_DISPLAY_NAMES
-
 if TYPE_CHECKING:
+    from multi_agent.config import AgentConfig
     from multi_agent.models import (
         AgentProposal,
         AgentReviewResponse,
@@ -24,16 +23,32 @@ if TYPE_CHECKING:
         TokenUsage,
     )
 
-AGENT_COLORS: dict[str, str] = {
-    "scientific_rigor": "cyan",
-    "canon_continuity": "magenta",
-    "sociopolitical": "yellow",
-}
+_COLOR_PALETTE = [
+    "cyan", "magenta", "yellow", "green", "blue",
+    "red", "bright_cyan", "bright_magenta",
+]
+
+_DISPLAY_NAMES: dict[str, str] = {}
+_COLORS: dict[str, str] = {}
+
+
+def init_agent_styles(agents: dict[str, AgentConfig]) -> None:
+    """Initialize display names and colors from agent config.
+
+    Call once after loading config, before any output functions.
+    """
+    from multi_agent.config import get_display_name
+
+    _DISPLAY_NAMES.clear()
+    _COLORS.clear()
+    for i, (key, cfg) in enumerate(agents.items()):
+        _DISPLAY_NAMES[key] = get_display_name(key, cfg)
+        _COLORS[key] = _COLOR_PALETTE[i % len(_COLOR_PALETTE)]
 
 
 def _agent_style(agent_name: str) -> str:
     """Get the color style for an agent."""
-    return AGENT_COLORS.get(agent_name, "white")
+    return _COLORS.get(agent_name, "white")
 
 
 console = Console(stderr=True)
@@ -45,7 +60,7 @@ def _print_errors(
     """Print error details for any agents that failed."""
     for item in items:
         if item.error:
-            display = AGENT_DISPLAY_NAMES.get(item.agent_name, item.agent_name)
+            display = _DISPLAY_NAMES.get(item.agent_name, item.agent_name)
             color = _agent_style(item.agent_name)
             console.print(f"\n  [{color}]{display} error:[/{color}] [red]{item.error}[/red]")
 
@@ -86,7 +101,7 @@ def print_header(
 
 def print_progress(agent_name: str, status: str) -> None:
     """Print a status update for an agent."""
-    display = AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
+    display = _DISPLAY_NAMES.get(agent_name, agent_name)
     color = _agent_style(agent_name)
     console.print(f"  [{color}]{display}:[/{color}] {status}", highlight=False)
 
@@ -133,7 +148,7 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
 
     rows = []
     for proposal in proposals:
-        display = AGENT_DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
+        display = _DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
 
         if proposal.error:
             status = Text("ERROR", style="bold red")
@@ -179,7 +194,7 @@ def print_review_round(
 
     rows = []
     for review in reviews:
-        display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
+        display = _DISPLAY_NAMES.get(review.agent_name, review.agent_name)
 
         if review.error:
             status_text = Text("ERROR", style="bold red")
@@ -200,13 +215,13 @@ def print_review_round(
     for review in reviews:
         if review.all_approved or review.error or not review.proposal_reviews:
             continue
-        display = AGENT_DISPLAY_NAMES.get(review.agent_name, review.agent_name)
+        display = _DISPLAY_NAMES.get(review.agent_name, review.agent_name)
         color = _agent_style(review.agent_name)
         mods = [r for r in review.proposal_reviews if r.verdict == "MODIFY"]
         if mods:
             console.print(f"\n  [{color}]{display} modifications:[/{color}]")
             for mod in mods:
-                orig_display = AGENT_DISPLAY_NAMES.get(mod.original_agent, mod.original_agent)
+                orig_display = _DISPLAY_NAMES.get(mod.original_agent, mod.original_agent)
                 orig_color = _agent_style(mod.original_agent)
                 console.print(
                     f"    edit {mod.edit_index} "
@@ -301,7 +316,7 @@ def print_arbitration_start(contested: list[ContestedEdit]) -> None:
     for ce in contested:
         agent_names = []
         for key in ce.versions:
-            display = AGENT_DISPLAY_NAMES.get(key, key)
+            display = _DISPLAY_NAMES.get(key, key)
             color = _agent_style(key)
             agent_names.append(f"[{color}]{display}[/{color}]")
         console.print(f"  {ce.file} — competing versions from: {', '.join(agent_names)}")
@@ -321,7 +336,7 @@ def print_dissents(dissents: list[Dissent]) -> None:
     console.print()
     console.print(Rule("[bold red]Dissenting Opinions[/bold red]", style="red"))
     for dissent in dissents:
-        display = AGENT_DISPLAY_NAMES.get(dissent.agent_name, dissent.agent_name)
+        display = _DISPLAY_NAMES.get(dissent.agent_name, dissent.agent_name)
         color = _agent_style(dissent.agent_name)
         console.print(f"\n  [{color} bold]{display}:[/{color} bold]")
         console.print(f"  {dissent.opinion}")

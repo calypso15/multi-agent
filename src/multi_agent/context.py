@@ -251,9 +251,10 @@ def build_review_round_prompt(
     file_contents: dict[str, str],
     canon: dict[str, str],
     round_number: int,
+    display_names: dict[str, str] | None = None,
 ) -> str:
     """Assemble the prompt for a review round."""
-    from multi_agent.agents import AGENT_DISPLAY_NAMES
+    _display_names = display_names or {}
 
     parts: list[str] = [_canon_section(canon)]
 
@@ -268,7 +269,7 @@ def build_review_round_prompt(
     for proposal in proposals:
         if not proposal.edits:
             continue
-        display = AGENT_DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
+        display = _display_names.get(proposal.agent_name, proposal.agent_name)
         parts.append(f"\n## Proposals from {display} ({proposal.agent_name})\n")
         parts.append(f"Summary: {proposal.summary}\n")
         for i, edit in enumerate(proposal.edits):

@@ -15,13 +15,19 @@ def _field_names(cls: type) -> set[str]:
 
 @dataclass
 class AgentConfig:
+    system_prompt: str | None = None
+    display_name: str | None = None
     enabled: bool = True
     propose_model: str | None = None
     review_model: str | None = None
-    system_prompt_override: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     propose_max_turns: int | None = None
     review_max_turns: int | None = None
+
+
+def get_display_name(agent_key: str, agent_cfg: AgentConfig) -> str:
+    """Return the display name for an agent, defaulting to titlecased key."""
+    return agent_cfg.display_name or agent_key.replace("_", " ").title()
 
 
 @dataclass
@@ -45,11 +51,7 @@ class TaskConfig:
 @dataclass
 class MultiAgentConfig:
     general: GeneralConfig = field(default_factory=GeneralConfig)
-    agents: dict[str, AgentConfig] = field(default_factory=lambda: {
-        "scientific_rigor": AgentConfig(),
-        "canon_continuity": AgentConfig(),
-        "sociopolitical": AgentConfig(),
-    })
+    agents: dict[str, AgentConfig] = field(default_factory=dict)
     tasks: dict[str, TaskConfig] = field(default_factory=dict)
 
 
@@ -134,6 +136,17 @@ def load_config(
             raise ValueError(
                 f"Unknown tool(s) in [agents.{name}].allowed_tools: "
                 f"{', '.join(sorted(invalid))}"
+            )
+
+    for name, agent_cfg in config.agents.items():
+        if agent_cfg.enabled and not agent_cfg.system_prompt:
+            raise ValueError(
+                f"Agent '{name}' is missing required 'system_prompt' field"
+            )
+        if agent_cfg.display_name is not None and not agent_cfg.display_name:
+            raise ValueError(
+                f"Agent '{name}' has an empty 'display_name' — "
+                "omit the field to use the default, or provide a non-empty value"
             )
 
     enabled_count = sum(1 for a in config.agents.values() if a.enabled)

@@ -10,7 +10,9 @@ from multi_agent.agents import (
     ARBITRATOR_PROMPT,
     build_agent_system_prompt,
     build_cli_args,
+    build_name_normalizer,
 )
+from multi_agent.config import get_display_name
 from multi_agent.claude_runner import run_agent
 from multi_agent.config import MultiAgentConfig
 from multi_agent.context import (
@@ -257,6 +259,7 @@ async def _run_single_reviewer(
     timeout_seconds: int,
     round_number: int,
     on_progress: Callable[[str, str], None] | None = None,
+    normalizer: Callable[[str], str] | None = None,
 ) -> AgentReviewResponse:
     """Run a single agent in review mode."""
     raw = await run_agent(
@@ -273,7 +276,8 @@ async def _run_single_reviewer(
 
     all_approved = raw.output.get("all_approved", True)
     proposal_reviews = parse_proposal_reviews(
-        raw.output.get("proposal_reviews", [])
+        raw.output.get("proposal_reviews", []),
+        normalizer=normalizer or (lambda x: x),
     )
 
     if on_progress:
@@ -348,7 +352,7 @@ async def run_propose_phase(
         if not agent_cfg.enabled:
             continue
         system_prompt = build_agent_system_prompt(
-            name, mode, agent_cfg.system_prompt_override,
+            name, mode, agent_cfg.system_prompt,
             custom_task_prompt=custom_task_prompt,
         )
         max_turns = (
@@ -432,6 +436,8 @@ async def run_review_phase(
     round_number: int,
     on_progress: Callable[[str, str], None] | None = None,
     previous_reviews: list[AgentReviewResponse] | None = None,
+    display_names: dict[str, str] | None = None,
+    normalizer: Callable[[str], str] | None = None,
 ) -> list[AgentReviewResponse]:
     """Run all enabled agents in review mode (sequentially).
 
@@ -463,9 +469,10 @@ async def run_review_phase(
 
         review_prompt = build_review_round_prompt(
             other_proposals, file_contents, canon, round_number,
+            display_names=display_names,
         )
         system_prompt = build_agent_system_prompt(
-            name, "review", agent_cfg.system_prompt_override,
+            name, "review", agent_cfg.system_prompt,
         )
         model = agent_cfg.review_model or agent_cfg.propose_model
         max_turns = (
@@ -480,6 +487,7 @@ async def run_review_phase(
         reviews.append(await _run_single_reviewer(
             name, review_prompt, cli_args, repo_root,
             config.general.timeout_seconds, round_number, on_progress,
+            normalizer=normalizer,
         ))
 
     return reviews
@@ -528,7 +536,7 @@ async def _collect_dissents(
         agent_cfg = config.agents.get(name)
         if not agent_cfg or not agent_cfg.enabled:
             continue
-        system_prompt = build_agent_system_prompt(name, "dissent")
+        system_prompt = build_agent_system_prompt(name, "dissent", agent_cfg.system_prompt)
         model = agent_cfg.review_model or agent_cfg.propose_model
         cli_args = build_cli_args(
             name, system_prompt, model, repo_root,
@@ -739,6 +747,9 @@ async def run_iteration_loop(
     root = Path(repo_root)
     start = time.monotonic()
 
+    normalizer = build_name_normalizer(config.agents)
+    display_names = {k: get_display_name(k, v) for k, v in config.agents.items()}
+
     # 1. Load file contents
     staged_diff: str | None = None
     if target_files is None:
@@ -836,6 +847,8 @@ async def run_iteration_loop(
             config, current_proposals, file_contents, canon,
             repo_root, round_num, on_progress,
             previous_reviews=previous_reviews,
+            display_names=display_names,
+            normalizer=normalizer,
         )
         for r in reviews:
             total_usage += r.usage

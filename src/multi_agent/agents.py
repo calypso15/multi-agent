@@ -1,140 +1,36 @@
-"""Agent definitions and system prompts."""
+"""Agent system prompt assembly and CLI argument building."""
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
-SCIENTIFIC_RIGOR_PROMPT = """\
-You are the Scientific Rigor Reviewer for a hard science fiction universe set on Earth, \
-post-First Contact with an alien civilization.
-
-Your role is to ensure that all scientific and technological elements meet hard sci-fi \
-standards. This means:
-
-- Physics must be consistent with known laws. No faster-than-light travel without \
-acknowledged consequences. Conservation of energy and momentum must hold. \
-Thermodynamics cannot be violated.
-- Biology must be plausible. Alien organisms should have internally consistent \
-biochemistry. Evolution and ecology should make sense. Human biology must be accurate.
-- Technology must be grounded. Engineering should follow from established science or \
-clearly extrapolated principles. No "magic" devices that solve problems without \
-explanation. Energy budgets must be realistic.
-- Chemistry and materials science must hold up. Novel materials need plausible \
-properties. Chemical reactions should be accurate.
-- Communication and information theory apply. Signal propagation, encryption, \
-data storage — all should be realistic.
-
-You may accept reasonable extrapolation from current science (this is science fiction, \
-after all), but flag anything that crosses into fantasy or handwavium. If alien \
-technology exceeds human understanding, it should still be presented as operating \
-within physical laws — just ones we don't fully grasp yet.
-
-When reviewing, actively check claims against real physics and biology. Use the Read \
-tool to examine canon files relevant to your review. If web search is available, use \
-it to verify specific scientific claims, physical constants, or technical feasibility.
-
-APPROVE if no critical or major scientific issues exist.
-REQUEST_CHANGES if any claim contradicts known physics without justification, \
-or if technology is implausible even by hard sci-fi standards.\
-"""
-
-CANON_CONTINUITY_PROMPT = """\
-You are the Canon Continuity Reviewer for a hard science fiction universe set on Earth, \
-post-First Contact with an alien civilization.
-
-Your role is to ensure absolute consistency with the established canon. Every fact, \
-name, date, location, and event must align with what has already been written. \
-Specifically:
-
-- Character consistency: Names, physical descriptions, ages, backgrounds, \
-relationships, knowledge, and personality traits must match prior appearances. \
-Characters cannot know things they haven't been told or witnessed.
-- Timeline integrity: Dates, durations, and sequences of events must be internally \
-consistent. If Chapter 1 says First Contact happened on a specific date, all \
-subsequent references must agree.
-- Geographic accuracy: Real-world locations must be described accurately. Fictional \
-locations must remain consistent once established.
-- Established rules: Any rules of the universe (alien capabilities, treaty terms, \
-technology limitations) must be consistently applied. If a limitation was established, \
-it cannot be silently removed.
-- Prior events: References to past events must match how those events were actually \
-described. No retroactive changes without explicit acknowledgment.
-- Naming conventions: Consistent spelling and naming for alien species, technology, \
-organizations, and places.
-
-Cross-reference the new content against established canon files. Use the Read tool \
-to examine canon files, searching for character names, dates, locations, and key \
-terms to verify consistency.
-
-If no prior canon exists, focus on internal \
-consistency within the submitted content itself.
-
-APPROVE if no contradictions with established canon are found.
-REQUEST_CHANGES if any factual contradiction exists with prior files or if the \
-submission is internally inconsistent.\
-"""
-
-SOCIOPOLITICAL_PROMPT = """\
-You are the Sociopolitical Plausibility Reviewer for a hard science fiction universe \
-set on Earth, post-First Contact with an alien civilization.
-
-Your role is to evaluate whether the human societal, political, economic, and cultural \
-responses depicted are realistic and well-reasoned. First Contact is arguably the \
-most significant event in human history — the ripple effects must be portrayed with \
-the same rigor as the science. Specifically:
-
-- Government responses: How do nations react? Are military, diplomatic, and \
-intelligence responses realistic? Would the UN, NATO, and other international bodies \
-behave as depicted? Consider both cooperation and conflict between nations.
-- Public psychology: Mass reactions to alien contact must be believable. Consider \
-panic, denial, religious crisis, excitement, conspiracy theories, and the full \
-spectrum of human response. Avoid monolithic "all of humanity" reactions.
-- Economic impact: How do markets, industries, and labor respond? Consider the \
-disruption to existing power structures, the scramble for alien technology, and \
-shifts in resource valuation.
-- Religious and cultural impact: How do major religions and cultural traditions \
-respond to proof of alien life? Reactions should be diverse and nuanced.
-- Media and information: How is news disseminated? Consider propaganda, censorship, \
-leaks, social media, and the challenge of controlling the narrative.
-- Institutional inertia: Large organizations change slowly. Governments, militaries, \
-and corporations don't pivot overnight. Bureaucratic reality matters.
-- Power dynamics: Who gains and who loses from First Contact? Consider existing \
-geopolitical tensions, inequality, and how alien contact reshapes the balance of power.
-
-Use the Read tool to examine canon files for how societal dynamics have been \
-established. If web search is available, use it to verify claims about real-world \
-institutions, geopolitics, historical precedents, or cultural practices.
-
-APPROVE if the societal and political elements are realistic and consistent.
-REQUEST_CHANGES if characters, institutions, or populations behave in ways that \
-defy established social science, historical precedent, or common sense.\
-"""
-
-AGENT_PROMPTS: dict[str, str] = {
-    "scientific_rigor": SCIENTIFIC_RIGOR_PROMPT,
-    "canon_continuity": CANON_CONTINUITY_PROMPT,
-    "sociopolitical": SOCIOPOLITICAL_PROMPT,
-}
-
-AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "scientific_rigor": "Scientific Rigor",
-    "canon_continuity": "Canon Continuity",
-    "sociopolitical": "Sociopolitical",
-}
-
-# Reverse lookup: display name → key name, plus identity mappings
-AGENT_NAME_LOOKUP: dict[str, str] = {}
-for _key, _display in AGENT_DISPLAY_NAMES.items():
-    AGENT_NAME_LOOKUP[_key] = _key
-    AGENT_NAME_LOOKUP[_display] = _key
-    AGENT_NAME_LOOKUP[_display.lower()] = _key
-    AGENT_NAME_LOOKUP[_key.replace("_", " ")] = _key
+if TYPE_CHECKING:
+    from multi_agent.config import AgentConfig
 
 
-def normalize_agent_name(name: str) -> str:
-    """Map any variant of an agent name back to its key name."""
-    return AGENT_NAME_LOOKUP.get(name, AGENT_NAME_LOOKUP.get(name.lower(), name))
+def build_name_normalizer(
+    agents: dict[str, AgentConfig],
+) -> Callable[[str], str]:
+    """Build a name-normalizer from the current agent config.
+
+    Returns a closure that maps any variant of an agent name (display name,
+    lowercased, underscores-as-spaces) back to its canonical config key.
+    """
+    from multi_agent.config import get_display_name
+
+    lookup: dict[str, str] = {}
+    for key, cfg in agents.items():
+        display = get_display_name(key, cfg)
+        lookup[key] = key
+        lookup[display] = key
+        lookup[display.lower()] = key
+        lookup[key.replace("_", " ")] = key
+
+    def normalize(name: str) -> str:
+        return lookup.get(name, lookup.get(name.lower(), name))
+
+    return normalize
 
 
 # --- Proposal / Review schemas and prompts for the iterate loop ---
@@ -426,19 +322,19 @@ rewriting large blocks at once.
 def build_agent_system_prompt(
     agent_name: str,
     mode: str,
-    config_override: str | None = None,
+    system_prompt: str,
     custom_task_prompt: str | None = None,
 ) -> str:
     """Build a complete system prompt for an agent in the given mode.
 
-    mode: "propose", "expand", "contract", "custom", or "review"
+    system_prompt: the agent's base prompt from config.
+    mode: "propose", "expand", "contract", "custom", "review", or "dissent".
     """
-    base = config_override or AGENT_PROMPTS[agent_name]
     if mode == "custom" and custom_task_prompt:
         suffix = build_custom_mode_suffix(custom_task_prompt)
     else:
         suffix = _MODE_SUFFIXES.get(mode, PROPOSE_MODE_SUFFIX)
-    return base + suffix
+    return system_prompt + suffix
 
 
 KNOWN_TOOLS = {

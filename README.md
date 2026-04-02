@@ -6,7 +6,7 @@ Built for a hard sci-fi universe set on Earth, post-First Contact. Powered by th
 
 ## How It Works
 
-When you run a review (manually or via pre-commit hook), the system launches three specialist agents:
+When you run a review (manually or via pre-commit hook), the system launches your configured specialist agents. Agents are defined entirely in `multi_agent.toml` — you can add, remove, or customize any number of them. The example config ships with three:
 
 | Agent | Focus |
 |---|---|
@@ -179,15 +179,16 @@ Place a `multi_agent.toml` in your fiction repository. See `multi_agent.example.
 
 ### Agent options
 
-Each agent under `[agents.<name>]` supports:
+Agents are fully defined in the TOML file. You can add, remove, or customize any number of agents. Each `[agents.<name>]` block supports:
 
 | Option | Default | Description |
 |---|---|---|
+| `system_prompt` | **required** | The agent's specialty/focus prompt |
+| `display_name` | titlecased key | Human-readable name for terminal output |
 | `enabled` | `true` | Disable an agent to skip it |
 | `propose_model` | — | Claude model for the propose phase (e.g., `claude-sonnet-4-6`) |
 | `review_model` | same as `propose_model` | Model for review rounds (e.g., `claude-haiku-4-5-20251001` for speed) |
 | `allowed_tools` | `[]` | Tools available during the propose phase (e.g., `["WebSearch", "WebFetch"]`) |
-| `system_prompt_override` | — | Replace the built-in system prompt entirely |
 | `propose_max_turns` | inherits from general | Override max turns for this agent's propose phase |
 | `review_max_turns` | inherits from general | Override max turns for this agent's review phase |
 
@@ -224,20 +225,25 @@ review_max_turns = 2
 
 [agents.scientific_rigor]
 enabled = true
-model = "claude-sonnet-4-6"
+display_name = "Scientific Rigor"
+propose_model = "claude-sonnet-4-6"
 review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
+system_prompt = "You are the Scientific Rigor Reviewer..."
 
 [agents.canon_continuity]
 enabled = true
-model = "claude-sonnet-4-6"
+display_name = "Canon Continuity"
+propose_model = "claude-sonnet-4-6"
 review_model = "claude-haiku-4-5-20251001"
+system_prompt = "You are the Canon Continuity Reviewer..."
 
 [agents.sociopolitical]
 enabled = true
-model = "claude-sonnet-4-6"
+propose_model = "claude-sonnet-4-6"
 review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
+system_prompt = "You are the Sociopolitical Plausibility Reviewer..."
 
 [tasks.deepen-characters]
 prompt = "Focus on deepening character voices and making dialogue more distinctive."
