@@ -16,11 +16,31 @@ from multi_agent.models import TokenUsage, extract_usage, unwrap_result
 _INTERRUPT_DRAIN_TIMEOUT = 10  # seconds to wait for process exit after SIGINT
 _GRACE_TIMEOUT = 60  # seconds for the resumed session to return results
 
-_RESUME_PROMPT = (
-    "You have run out of time. Immediately return your response as JSON "
-    "matching the schema described in your system prompt. Use whatever "
-    "information you have gathered so far. Do not make any more tool calls."
-)
+_RESUME_PROMPT = """\
+You have run out of time. Immediately return your response as JSON. \
+Use whatever information you have gathered so far. Do not make any more \
+tool calls.
+
+Return JSON matching this EXACT schema:
+{
+  "summary": "one-paragraph summary of your proposed changes",
+  "edits": [
+    {
+      "file": "relative file path",
+      "original_text": "exact verbatim text from the file to replace",
+      "replacement_text": "your proposed replacement",
+      "rationale": "why this edit is needed"
+    }
+  ]
+}
+
+If you were reviewing proposals instead of proposing, return:
+{
+  "all_approved": true or false,
+  "summary": "summary of your review",
+  "proposal_reviews": []
+}
+"""
 
 
 @dataclass
@@ -294,13 +314,22 @@ async def _resume_for_results(
         )
 
         usage = extract_usage(result.result_json) if result.result_json else TokenUsage()
+
+        if result.returncode != 0:
+            return None
+
         output = unwrap_result(result.result_json)
 
-        if output:
+        if output is not None:
             return AgentResult(output=output, usage=usage, duration_seconds=0)
         return None
 
-    except (asyncio.TimeoutError, Exception):
+    except asyncio.TimeoutError:
+        if proc and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        return None
+    except Exception:
         if proc and proc.returncode is None:
             proc.kill()
             await proc.wait()

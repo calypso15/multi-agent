@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import Callable
@@ -217,13 +216,6 @@ def merge_proposals(
 # --- Parallel agent helper ---
 
 
-async def _gather_results(coros: dict[str, asyncio.coroutines]) -> dict[str, object]:
-    """Run named coroutines in parallel via TaskGroup and return results by name."""
-    async with asyncio.TaskGroup() as tg:
-        tasks = {name: tg.create_task(coro) for name, coro in coros.items()}
-    return {name: t.result() for name, t in tasks.items()}
-
-
 # --- Individual agent runners ---
 
 
@@ -342,7 +334,7 @@ async def run_propose_phase(
     custom_task_prompt: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
-    """Run all enabled agents in propose mode (parallel)."""
+    """Run all enabled agents in propose mode (sequentially)."""
     propose_prompt = build_propose_prompt(
         file_contents, canon, staged_diff,
         min_severity=config.general.min_severity,
@@ -351,7 +343,7 @@ async def run_propose_phase(
 
     mode = task if task in ("expand", "contract", "custom") else "propose"
 
-    coros: dict[str, asyncio.coroutines] = {}
+    proposals: list[AgentProposal] = []
     for name, agent_cfg in config.agents.items():
         if not agent_cfg.enabled:
             continue
@@ -369,13 +361,12 @@ async def run_propose_phase(
             max_turns=max_turns,
             allowed_tools=agent_cfg.allowed_tools or None,
         )
-        coros[name] = _run_single_proposer(
+        proposals.append(await _run_single_proposer(
             name, propose_prompt, cli_args, repo_root,
             config.general.timeout_seconds, on_progress,
-        )
+        ))
 
-    results = await _gather_results(coros)
-    return list(results.values())
+    return proposals
 
 
 def _last_modifiers(
@@ -442,14 +433,13 @@ async def run_review_phase(
     on_progress: Callable[[str, str], None] | None = None,
     previous_reviews: list[AgentReviewResponse] | None = None,
 ) -> list[AgentReviewResponse]:
-    """Run all enabled agents in review mode (parallel).
+    """Run all enabled agents in review mode (sequentially).
 
     Each agent only reviews proposals from OTHER agents -- not its own.
     Additionally, edits an agent last modified in the previous round are
     excluded from their review prompt (they already approved their version).
     """
     reviews: list[AgentReviewResponse] = []
-    coros: dict[str, asyncio.coroutines] = {}
 
     for name, agent_cfg in config.agents.items():
         if not agent_cfg.enabled:
@@ -487,13 +477,11 @@ async def run_review_phase(
             name, system_prompt, model, repo_root,
             max_turns=max_turns,
         )
-        coros[name] = _run_single_reviewer(
+        reviews.append(await _run_single_reviewer(
             name, review_prompt, cli_args, repo_root,
             config.general.timeout_seconds, round_number, on_progress,
-        )
+        ))
 
-    results = await _gather_results(coros)
-    reviews.extend(results.values())
     return reviews
 
 
@@ -535,7 +523,7 @@ async def _collect_dissents(
     """Collect brief dissenting opinions from agents that didn't approve."""
     prompt = _build_dissent_prompt(proposals, file_contents)
 
-    coros: dict[str, asyncio.coroutines] = {}
+    dissents: list[Dissent] = []
     for name in dissenting_agents:
         agent_cfg = config.agents.get(name)
         if not agent_cfg or not agent_cfg.enabled:
@@ -546,13 +534,14 @@ async def _collect_dissents(
             name, system_prompt, model, repo_root,
             max_turns=1,
         )
-        coros[name] = _run_single_dissenter(
+        result = await _run_single_dissenter(
             name, prompt, cli_args, repo_root,
             config.general.timeout_seconds, on_progress,
         )
+        if result.opinion:
+            dissents.append(result)
 
-    results = await _gather_results(coros)
-    return [d for d in results.values() if d.opinion]
+    return dissents
 
 
 # --- Stall detection and arbitration ---
@@ -675,27 +664,18 @@ async def _run_arbitration(
             model = agent_cfg.review_model or agent_cfg.propose_model
             break
 
-    coros: dict[str, asyncio.coroutines] = {}
-    # Store contested edits by key for result mapping
-    contested_by_key: dict[str, ContestedEdit] = {}
-
+    results: list[ArbitrationResult] = []
     for i, contested in enumerate(contested_edits):
         key = f"arbitrator_{i}"
-        contested_by_key[key] = contested
         prompt = _build_arbitration_prompt(contested, file_contents)
         cli_args = build_cli_args(
             key, ARBITRATOR_PROMPT, model, repo_root, max_turns=1,
         )
-        coros[key] = _run_single_arbitrator(
+        results.append(await _run_single_arbitrator(
             key, contested, prompt, cli_args, repo_root,
             config.general.timeout_seconds, on_progress,
-        )
+        ))
 
-    raw_results = await _gather_results(coros)
-
-    results: list[ArbitrationResult] = []
-    for key in sorted(raw_results):
-        results.append(raw_results[key])
     return results
 
 
