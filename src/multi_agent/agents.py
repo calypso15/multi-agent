@@ -238,6 +238,15 @@ For each change, propose an exact text replacement:
 - "replacement_text" is your proposed replacement for that text.
 - Explain WHY from your domain expertise in "rationale".
 
+IMPORTANT — keep edits small and focused:
+- Prefer MANY small edits over FEW large ones. Target one paragraph or \
+logical unit per edit.
+- Do NOT combine multiple unrelated changes into a single large edit.
+- Keep each "replacement_text" under ~500 words. If a larger change is \
+needed, split it into multiple sequential edits.
+- This constraint exists because all agents generate output in parallel — \
+one agent producing a very long response blocks the others.
+
 If you have no changes to propose, return an empty edits array.
 
 Return your response as JSON matching this schema:
@@ -269,6 +278,9 @@ your specialty perspective. Add vivid descriptions, flesh out thin scenes, \
 deepen character moments, and develop world-building elements. Preserve the \
 existing narrative arc and voice. Propose concrete edits that ADD detail \
 where the content would benefit from it.
+
+Work section by section — propose one edit per paragraph or logical unit \
+rather than rewriting large blocks at once.
 """ + _PROPOSE_JSON_INSTRUCTIONS
 
 CONTRACT_MODE_SUFFIX = """\
@@ -405,7 +417,9 @@ def build_custom_mode_suffix(task_prompt: str) -> str:
 
 {task_prompt}
 
-Propose concrete edits from your specialty perspective.
+Propose concrete edits from your specialty perspective. Work section by \
+section — propose one edit per paragraph or logical unit rather than \
+rewriting large blocks at once.
 """ + _PROPOSE_JSON_INSTRUCTIONS
 
 
