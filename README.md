@@ -77,21 +77,20 @@ python -m multi_agent --repo ~/git/my-novel review --dry-run canon/chapter-01.md
 python -m multi_agent --repo ~/git/my-novel review
 ```
 
-### Expanding and contracting
+### Commands
+
+Commands are defined in `[commands]` blocks in `multi_agent.toml`. They can be
+invoked as top-level CLI commands or via `review --task`:
 
 ```bash
-# Expand a file with richer detail
+# Top-level command (auto-generated from TOML)
 python -m multi_agent --repo ~/git/my-novel expand canon/chapter-03.md
 
-# Tighten prose and cut filler
-python -m multi_agent --repo ~/git/my-novel contract canon/chapter-03.md
-
-# These are shortcuts for:
+# Equivalent via --task
 python -m multi_agent --repo ~/git/my-novel review --task expand canon/chapter-03.md
-python -m multi_agent --repo ~/git/my-novel review --task contract canon/chapter-03.md
 
-# Custom tasks defined in multi_agent.toml
-python -m multi_agent --repo ~/git/my-novel review --task deepen-characters canon/chapter-03.md
+# Any command defined in [commands] works the same way
+python -m multi_agent --repo ~/git/my-novel deepen-characters canon/chapter-03.md
 ```
 
 ### Pre-commit hook
@@ -192,23 +191,24 @@ Agents are fully defined in the TOML file. You can add, remove, or customize any
 | `propose_max_turns` | inherits from general | Override max turns for this agent's propose phase |
 | `review_max_turns` | inherits from general | Override max turns for this agent's review phase |
 
-### Custom tasks
+### Commands
 
-Define reusable tasks in `multi_agent.toml` under `[tasks.<name>]`:
+Define commands in `multi_agent.toml` under `[commands.<name>]`. Each command needs a `prompt` describing the task for agents, and an optional `description` for `--help` text. Commands become available both as top-level CLI commands and via `review --task`.
 
 ```toml
-[tasks.deepen-characters]
+[commands.review]
+description = "Review files and propose changes via consensus"
+prompt = "Review the submitted content from your specialty perspective and propose CONCRETE edits to improve it."
+
+[commands.expand]
+description = "Expand files with richer detail via consensus"
+prompt = "Your goal is to enrich the submitted content. Add vivid descriptions, flesh out thin scenes..."
+
+[commands.deepen-characters]
 prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive."
-
-[tasks.worldbuild]
-prompt = "Enrich world-building details: sensory descriptions, environmental atmosphere, and cultural texture."
 ```
 
-Use with `--task`:
-
-```bash
-python -m multi_agent review --task deepen-characters canon/chapter-03.md
-```
+The `review` command has a built-in default and is always available even without a TOML file. All other commands must be defined in config.
 
 ### Example config
 
@@ -245,27 +245,25 @@ review_model = "claude-haiku-4-5-20251001"
 allowed_tools = ["WebSearch", "WebFetch"]
 system_prompt = "You are the Sociopolitical Plausibility Reviewer..."
 
-[tasks.deepen-characters]
+[commands.deepen-characters]
 prompt = "Focus on deepening character voices and making dialogue more distinctive."
 ```
 
 ## CLI Reference
 
 ```
-multi-agent [--repo PATH] review [FILES] [--task NAME] [--dry-run] [--max-rounds N]
-multi-agent [--repo PATH] expand FILES [--dry-run] [--max-rounds N]
-multi-agent [--repo PATH] contract FILES [--dry-run] [--max-rounds N]
+multi-agent [--repo PATH] review [FILES] [--task NAME] [--dry-run] [--max-rounds N] [--prompt TEXT]
+multi-agent [--repo PATH] <command> FILES [--dry-run] [--max-rounds N] [--prompt TEXT]
 multi-agent [--repo PATH] install-hook
 multi-agent [--repo PATH] uninstall-hook
 multi-agent [--repo PATH] check-config
 ```
 
 - `review` — review files on disk, or staged files when no FILES given
-- `expand` — shortcut for `review --task expand`
-- `contract` — shortcut for `review --task contract`
+- `<command>` — any command defined in `[commands]` (e.g. `expand`, `contract`); auto-generated from TOML
 - `--repo PATH` — target a different git repository (defaults to current directory)
 - `--config PATH` — use a specific config file
-- `--task NAME` — task mode: `expand`, `contract`, or a custom task from config
+- `--task NAME` — run a command from `[commands]` config (e.g. `expand`, `contract`)
 - `--dry-run` — show proposed changes without applying
 - `--max-rounds N` — override the configured max iteration rounds
 - `--prompt TEXT` — append additional instructions for the agents
