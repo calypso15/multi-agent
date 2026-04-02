@@ -334,26 +334,26 @@ async def run_propose_phase(
     canon: dict[str, str],
     staged_diff: str | None,
     repo_root: str,
-    task: str | None = None,
-    custom_task_prompt: str | None = None,
+    command_name: str | None = None,
+    command_prompt: str | None = None,
+    severity_filter: bool = True,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
     """Run all enabled agents in propose mode (sequentially)."""
     propose_prompt = build_propose_prompt(
         file_contents, canon, staged_diff,
         min_severity=config.general.min_severity,
-        task=task,
+        severity_filter=severity_filter,
     )
-
-    mode = task if task in ("expand", "contract", "custom") else "propose"
 
     proposals: list[AgentProposal] = []
     for name, agent_cfg in config.agents.items():
         if not agent_cfg.enabled:
             continue
         system_prompt = build_agent_system_prompt(
-            name, mode, agent_cfg.system_prompt,
-            custom_task_prompt=custom_task_prompt,
+            name, "command", agent_cfg.system_prompt,
+            command_name=command_name,
+            command_prompt=command_prompt,
         )
         max_turns = (
             agent_cfg.propose_max_turns
@@ -731,8 +731,9 @@ async def run_iteration_loop(
     config: MultiAgentConfig,
     repo_root: str,
     target_files: list[str] | None = None,
-    task: str | None = None,
-    custom_task_prompt: str | None = None,
+    command_name: str | None = None,
+    command_prompt: str | None = None,
+    severity_filter: bool = True,
     on_progress: Callable[[str, str], None] | None = None,
     on_phase: Callable[[PhaseEvent], None] | None = None,
 ) -> IterationResult:
@@ -740,8 +741,8 @@ async def run_iteration_loop(
 
     If target_files is None, reviews staged files. Otherwise reviews the
     specified files from the working tree.
-    task: "expand", "contract", "custom", or None (default review).
-    custom_task_prompt: prompt text for custom tasks.
+    command_name/command_prompt: the TOML command driving this run.
+    severity_filter: whether to apply min_severity filtering.
     on_phase: callback for typed phase events (ProposeDone, ReviewDone, etc.).
     """
     root = Path(repo_root)
@@ -787,7 +788,8 @@ async def run_iteration_loop(
 
     proposals = await run_propose_phase(
         config, file_contents, canon, staged_diff, repo_root,
-        task=task, custom_task_prompt=custom_task_prompt,
+        command_name=command_name, command_prompt=command_prompt,
+        severity_filter=severity_filter,
         on_progress=on_progress,
     )
     for p in proposals:

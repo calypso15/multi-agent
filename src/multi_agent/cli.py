@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from multi_agent.config import load_config
+from multi_agent.config import CommandConfig, load_config
 from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
@@ -33,7 +33,71 @@ from multi_agent.output import (
 )
 
 
-@click.group()
+class ConfigGroup(click.Group):
+    """Click group that auto-generates commands from TOML [commands] config."""
+
+    def _get_toml_commands(self, ctx: click.Context) -> dict[str, CommandConfig]:
+        cache = ctx.meta.get("_toml_commands")
+        if cache is not None:
+            return cache
+        try:
+            repo = ctx.params.get("repo_path") if ctx.params else None
+            search = Path(repo) if repo else None
+            config = load_config(search_from=search)
+            ctx.meta["_toml_commands"] = config.commands
+        except Exception:
+            ctx.meta["_toml_commands"] = {}
+        return ctx.meta["_toml_commands"]
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        builtin = set(super().list_commands(ctx))
+        dynamic = [k for k in self._get_toml_commands(ctx) if k not in builtin]
+        return sorted(builtin | set(dynamic))
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        cmd = super().get_command(ctx, cmd_name)
+        if cmd is not None:
+            return cmd
+        toml_cmds = self._get_toml_commands(ctx)
+        if cmd_name in toml_cmds:
+            return _make_toml_command(cmd_name, toml_cmds[cmd_name])
+        return None
+
+
+def _make_toml_command(cmd_name: str, cmd_config: CommandConfig) -> click.Command:
+    """Create a Click command from a TOML [commands] entry."""
+
+    @click.command(
+        cmd_name,
+        help=cmd_config.description
+        or f"Run the '{cmd_name}' command via consensus.",
+    )
+    @click.argument("files", nargs=-1, required=True)
+    @click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+                  help="Path to multi_agent.toml config file.")
+    @click.option("--dry-run", is_flag=True, default=False,
+                  help="Show proposed changes without applying.")
+    @click.option("--max-rounds", type=int, default=None,
+                  help="Override max iteration rounds.")
+    @click.option("--prompt", "prompt", default=None,
+                  help="Additional instructions for the agents.")
+    @click.pass_context
+    def cmd(
+        ctx: click.Context,
+        files: tuple[str, ...],
+        config_path: str | None,
+        dry_run: bool,
+        max_rounds: int | None,
+        prompt: str | None,
+    ) -> None:
+        _review_common(
+            ctx, files, config_path, False, dry_run, max_rounds, cmd_name, prompt,
+        )
+
+    return cmd
+
+
+@click.group(cls=ConfigGroup)
 @click.option("--repo", "repo_path", type=click.Path(exists=True), default=None,
               help="Path to a git repository to review. Defaults to current directory.")
 @click.pass_context
@@ -50,24 +114,19 @@ def _resolve_repo(ctx: click.Context) -> Path:
     return find_git_root(start)
 
 
-BUILTIN_TASKS = {"expand", "contract"}
+def _resolve_task(
+    task_name: str | None, config,
+) -> tuple[str | None, CommandConfig | None]:
+    """Resolve a --task name to (command_name, CommandConfig).
 
-
-def _resolve_task(task_name: str | None, config) -> tuple[str | None, str | None]:
-    """Resolve a task name to (mode, custom_prompt).
-
-    Returns (None, None) for default review mode.
-    Returns ("expand", None) or ("contract", None) for built-ins.
-    Returns ("custom", prompt) for config-defined tasks.
-    Raises click.BadParameter if task is unknown.
+    Returns (None, None) when no --task is given (uses default review command).
+    Raises click.BadParameter if the task name is not in config.commands.
     """
     if task_name is None:
         return None, None
-    if task_name in BUILTIN_TASKS:
-        return task_name, None
-    if task_name in config.tasks:
-        return "custom", config.tasks[task_name].prompt
-    available = sorted(BUILTIN_TASKS | set(config.tasks.keys()))
+    if task_name in config.commands:
+        return task_name, config.commands[task_name]
+    available = sorted(config.commands.keys())
     raise click.BadParameter(
         f"Unknown task '{task_name}'. Available: {', '.join(available)}",
         param_hint="'--task'",
@@ -84,8 +143,9 @@ def _run_iteration_and_present(
     uncommitted_canon: int,
     dry_run: bool,
     hook_mode: bool,
-    task: str | None = None,
-    custom_task_prompt: str | None = None,
+    command_name: str | None = None,
+    command_prompt: str | None = None,
+    severity_filter: bool = True,
     task_label: str | None = None,
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
@@ -114,12 +174,13 @@ def _run_iteration_and_present(
             case DissentsDone(dissents=dissents):
                 print_dissents(dissents)
 
-    display_task = task_label or task
+    display_task = task_label or command_name
     print_header(files_display, canon_count, canon_size_kb, uncommitted_canon, task=display_task)
 
     result = asyncio.run(run_iteration_loop(
         config, str(repo_root), target_files=target_files,
-        task=task, custom_task_prompt=custom_task_prompt,
+        command_name=command_name, command_prompt=command_prompt,
+        severity_filter=severity_filter,
         on_progress=print_progress,
         on_phase=on_phase,
     ))
@@ -200,7 +261,7 @@ def _review_common(
     task_name: str | None,
     prompt: str | None = None,
 ) -> None:
-    """Shared implementation for review, expand, and contract commands."""
+    """Shared implementation for review and TOML-defined commands."""
     try:
         repo_root = _resolve_repo(ctx)
     except Exception:
@@ -218,27 +279,35 @@ def _review_common(
             general=dataclasses.replace(config.general, max_rounds=max_rounds),
         )
 
-    task, custom_task_prompt = _resolve_task(task_name, config)
+    cmd_name, cmd_config = _resolve_task(task_name, config)
 
-    # --prompt: append user instructions to the task prompt
-    task_label = task  # preserve original task name for display
+    # Determine command and severity filtering.
+    if cmd_name is None:
+        # No --task: default to the "review" command with severity filtering.
+        cmd_name = "review"
+        cmd_config = config.commands["review"]
+        severity_filter = True
+    else:
+        severity_filter = False
+
+    task_label = cmd_name
+
+    # --prompt: append or override user instructions
     if prompt:
-        if task is None:
-            # No task specified -- treat prompt as a custom task
-            task = "custom"
+        if task_name is None:
+            # No --task given: treat bare --prompt as a standalone command.
+            cmd_name = "prompt"
+            cmd_config = CommandConfig(prompt=prompt)
+            severity_filter = False
             task_label = "prompt"
-            custom_task_prompt = prompt
-        elif task == "custom":
-            # Config-defined task -- append user instructions
-            custom_task_prompt = f"{custom_task_prompt}\n\n{prompt}"
         else:
-            # Built-in task (expand/contract) -- switch to custom with
-            # the built-in's suffix + user instructions
-            from multi_agent.agents import _MODE_SUFFIXES
-            builtin_instructions = _MODE_SUFFIXES.get(task, "")
-            task_label = task  # keep showing "expand" or "contract"
-            task = "custom"
-            custom_task_prompt = f"{builtin_instructions.strip()}\n\nAdditional instructions: {prompt}"
+            # Append user instructions to the command's prompt.
+            cmd_config = dataclasses.replace(
+                cmd_config,
+                prompt=f"{cmd_config.prompt}\n\nAdditional instructions: {prompt}",
+            )
+
+    command_prompt = cmd_config.prompt
 
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
@@ -288,8 +357,9 @@ def _review_common(
         uncommitted_canon=uncommitted,
         dry_run=dry_run,
         hook_mode=hook_mode,
-        task=task,
-        custom_task_prompt=custom_task_prompt,
+        command_name=cmd_name,
+        command_prompt=command_prompt,
+        severity_filter=severity_filter,
         task_label=task_label,
     )
     sys.exit(exit_code)
@@ -306,7 +376,7 @@ def _review_common(
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
 @click.option("--task", "task_name", default=None,
-              help="Task mode: expand, contract, or a custom task from config.")
+              help="Run a command from [commands] config (e.g. expand, contract).")
 @click.option("--prompt", "prompt", default=None,
               help="Additional instructions for the agents.")
 @click.pass_context
@@ -333,68 +403,6 @@ def review(
         multi-agent review                  # reviews staged files
     """
     _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name, prompt)
-
-
-@main.command()
-@click.argument("files", nargs=-1, required=True)
-@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
-              help="Path to multi_agent.toml config file.")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Show proposed changes without applying.")
-@click.option("--max-rounds", type=int, default=None,
-              help="Override max iteration rounds.")
-@click.option("--prompt", "prompt", default=None,
-              help="Additional instructions for the agents.")
-@click.pass_context
-def expand(
-    ctx: click.Context,
-    files: tuple[str, ...],
-    config_path: str | None,
-    dry_run: bool,
-    max_rounds: int | None,
-    prompt: str | None,
-) -> None:
-    """Expand files with richer detail via consensus.
-
-    Shortcut for: review --task expand FILES
-
-    \b
-    Examples:
-        multi-agent expand canon/chapter-03.md
-        multi-agent expand --prompt "Focus on the descent sequence" canon/chapter-05.md
-    """
-    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "expand", prompt)
-
-
-@main.command()
-@click.argument("files", nargs=-1, required=True)
-@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
-              help="Path to multi_agent.toml config file.")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Show proposed changes without applying.")
-@click.option("--max-rounds", type=int, default=None,
-              help="Override max iteration rounds.")
-@click.option("--prompt", "prompt", default=None,
-              help="Additional instructions for the agents.")
-@click.pass_context
-def contract(
-    ctx: click.Context,
-    files: tuple[str, ...],
-    config_path: str | None,
-    dry_run: bool,
-    max_rounds: int | None,
-    prompt: str | None,
-) -> None:
-    """Tighten prose and cut filler via consensus.
-
-    Shortcut for: review --task contract FILES
-
-    \b
-    Examples:
-        multi-agent contract canon/chapter-03.md
-        multi-agent contract --prompt "Preserve all dialogue" canon/chapter-05.md
-    """
-    _review_common(ctx, files, config_path, False, dry_run, max_rounds, "contract", prompt)
 
 
 @main.command("install-hook")
@@ -475,11 +483,11 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
             f"tools: {tools}, prompt: {has_prompt})"
         )
 
-    if config.tasks:
+    if config.commands:
         console.print()
-        console.print("[bold]Custom Tasks:[/bold]")
-        for name, task_cfg in config.tasks.items():
-            prompt_preview = task_cfg.prompt[:60] + "..." if len(task_cfg.prompt) > 60 else task_cfg.prompt
-            console.print(f"  {name}: {prompt_preview}")
-    console.print()
-    console.print("[dim]Built-in tasks: expand, contract[/dim]")
+        console.print("[bold]Commands:[/bold]")
+        for name, cmd_cfg in config.commands.items():
+            desc = cmd_cfg.description
+            if not desc:
+                desc = cmd_cfg.prompt[:60] + "..." if len(cmd_cfg.prompt) > 60 else cmd_cfg.prompt
+            console.print(f"  {name}: {desc}")

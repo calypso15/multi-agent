@@ -166,11 +166,50 @@ REQUEST_CHANGES if characters, institutions, or populations behave in ways that 
 defy established social science, historical precedent, or common sense.\
 """
 
-# Custom tasks (used with --task flag). Built-in tasks: expand, contract
-# Usage: python -m multi_agent review --task deepen-characters canon/chapter-03.md
+# --- Command Definitions ---
+# Commands define the task mode for agents. The "review" command is the
+# default (used when no --task is specified). Other commands are available
+# via --task or as top-level CLI commands (e.g., multi-agent expand FILES).
+#
+# Each command needs at minimum:
+#   prompt = "..."       (required — the task instructions for agents)
+#   description = "..."  (optional — shown in --help)
+#
+# Usage examples:
+#   multi-agent review canon/chapter-03.md
+#   multi-agent review --task expand canon/chapter-03.md
+#   multi-agent expand canon/chapter-03.md
+#   multi-agent deepen-characters canon/chapter-03.md
 
-[tasks.deepen-characters]
+[commands.review]
+description = "Review files and propose changes via consensus"
+prompt = """\
+Review the submitted content from your specialty perspective and propose \
+CONCRETE edits to improve it. Keep edits minimal — change only what is \
+necessary to fix the issue."""
+
+[commands.expand]
+description = "Expand files with richer detail via consensus"
+prompt = """\
+Your goal is to enrich the submitted content from your specialty perspective. \
+Add vivid descriptions, flesh out thin scenes, deepen character moments, and \
+develop world-building elements. Preserve the existing narrative arc and \
+voice. Propose concrete edits that ADD detail where the content would \
+benefit from it.
+
+Work section by section — propose one edit per paragraph or logical unit \
+rather than rewriting large blocks at once."""
+
+[commands.contract]
+description = "Tighten prose and cut filler via consensus"
+prompt = """\
+Your goal is to tighten the prose from your specialty perspective. Remove \
+redundant words and phrases, consolidate repetitive passages, cut filler, \
+and streamline sentences. Preserve all meaning and narrative beats with \
+fewer words. Propose concrete edits that make the writing more concise."""
+
+[commands.deepen-characters]
 prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive and memorable."
 
-[tasks.worldbuild]
+[commands.worldbuild]
 prompt = "Enrich world-building details: sensory descriptions, environmental atmosphere, cultural texture, and background activity that makes settings feel lived-in."

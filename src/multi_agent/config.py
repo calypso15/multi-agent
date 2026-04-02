@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,15 +45,27 @@ class GeneralConfig:
 
 
 @dataclass
-class TaskConfig:
+class CommandConfig:
     prompt: str = ""
+    description: str = ""
+
+
+# Default review command, used when absent from TOML.
+DEFAULT_REVIEW_COMMAND = CommandConfig(
+    description="Review files and propose changes via consensus",
+    prompt=(
+        "Review the submitted content from your specialty perspective "
+        "and propose CONCRETE edits to improve it. Keep edits minimal "
+        "\u2014 change only what is necessary to fix the issue."
+    ),
+)
 
 
 @dataclass
 class MultiAgentConfig:
     general: GeneralConfig = field(default_factory=GeneralConfig)
     agents: dict[str, AgentConfig] = field(default_factory=dict)
-    tasks: dict[str, TaskConfig] = field(default_factory=dict)
+    commands: dict[str, CommandConfig] = field(default_factory=dict)
 
 
 def _find_config_file(start: Path) -> Path | None:
@@ -82,7 +95,10 @@ def load_config(
         path = _find_config_file(search_from or Path.cwd())
 
     if path is None:
-        return MultiAgentConfig()
+        config = MultiAgentConfig()
+        if "review" not in config.commands:
+            config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
+        return config
 
     with open(path, "rb") as f:
         raw = tomllib.load(f)
@@ -115,17 +131,31 @@ def load_config(
             )
             config.agents[name] = agent_cfg
 
-    if "tasks" in raw:
-        valid = _field_names(TaskConfig)
-        for name, task_raw in raw["tasks"].items():
-            unknown = set(task_raw.keys()) - valid
+    if "tasks" in raw and "commands" in raw:
+        raise ValueError(
+            "Config contains both [tasks] and [commands]. "
+            "Migrate [tasks] entries to [commands]."
+        )
+
+    commands_raw = raw.get("commands") or raw.get("tasks")
+    if commands_raw is not None:
+        if "tasks" in raw:
+            print(
+                "Warning: [tasks] is deprecated, migrate to [commands]. "
+                "See multi_agent.example.toml.",
+                file=sys.stderr,
+            )
+        section = "commands" if "commands" in raw else "tasks"
+        valid = _field_names(CommandConfig)
+        for name, cmd_raw in commands_raw.items():
+            unknown = set(cmd_raw.keys()) - valid
             if unknown:
                 raise ValueError(
-                    f"Unknown key(s) in [tasks.{name}]: "
+                    f"Unknown key(s) in [{section}.{name}]: "
                     f"{', '.join(sorted(unknown))}"
                 )
-            config.tasks[name] = TaskConfig(
-                **{k: v for k, v in task_raw.items() if k in valid}
+            config.commands[name] = CommandConfig(
+                **{k: v for k, v in cmd_raw.items() if k in valid}
             )
 
     from multi_agent.agents import KNOWN_TOOLS
@@ -165,5 +195,15 @@ def load_config(
             f"min_severity must be one of {valid_severities}, "
             f"got '{config.general.min_severity}'"
         )
+
+    # Insert default review command if missing.
+    if "review" not in config.commands:
+        config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
+
+    for name, cmd_cfg in config.commands.items():
+        if not cmd_cfg.prompt:
+            raise ValueError(
+                f"Command '{name}' is missing required 'prompt' field"
+            )
 
     return config

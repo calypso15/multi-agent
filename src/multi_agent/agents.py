@@ -154,43 +154,6 @@ Return your response as JSON matching this schema:
   - "rationale": why this edit is needed from your specialty
 """
 
-PROPOSE_MODE_SUFFIX = """\
-
-
-# YOUR TASK MODE: PROPOSE EDITS
-
-You are in PROPOSE mode. Review the submitted content from your specialty \
-perspective and propose CONCRETE edits to improve it. \
-Keep edits minimal — change only what is necessary to fix the issue.
-""" + _PROPOSE_JSON_INSTRUCTIONS
-
-EXPAND_MODE_SUFFIX = """\
-
-
-# YOUR TASK MODE: EXPAND CONTENT
-
-You are in EXPAND mode. Your goal is to enrich the submitted content from \
-your specialty perspective. Add vivid descriptions, flesh out thin scenes, \
-deepen character moments, and develop world-building elements. Preserve the \
-existing narrative arc and voice. Propose concrete edits that ADD detail \
-where the content would benefit from it.
-
-Work section by section — propose one edit per paragraph or logical unit \
-rather than rewriting large blocks at once.
-""" + _PROPOSE_JSON_INSTRUCTIONS
-
-CONTRACT_MODE_SUFFIX = """\
-
-
-# YOUR TASK MODE: CONTRACT CONTENT
-
-You are in CONTRACT mode. Your goal is to tighten the prose from your \
-specialty perspective. Remove redundant words and phrases, consolidate \
-repetitive passages, cut filler, and streamline sentences. Preserve all \
-meaning and narrative beats with fewer words. Propose concrete edits that \
-make the writing more concise.
-""" + _PROPOSE_JSON_INSTRUCTIONS
-
 REVIEW_MODE_SUFFIX = """\
 
 
@@ -295,27 +258,21 @@ ARBITRATOR_OUTPUT_FORMAT = json.dumps({
     },
 })
 
-_MODE_SUFFIXES: dict[str, str] = {
-    "propose": PROPOSE_MODE_SUFFIX,
-    "expand": EXPAND_MODE_SUFFIX,
-    "contract": CONTRACT_MODE_SUFFIX,
+_INTERNAL_MODE_SUFFIXES: dict[str, str] = {
     "review": REVIEW_MODE_SUFFIX,
     "dissent": DISSENT_MODE_SUFFIX,
 }
 
 
-def build_custom_mode_suffix(task_prompt: str) -> str:
-    """Build a propose-mode suffix from a custom task prompt."""
+def build_command_mode_suffix(command_name: str, prompt: str) -> str:
+    """Build a propose-mode suffix from a TOML command's prompt."""
+    label = command_name.upper().replace("-", " ").replace("_", " ")
     return f"""\
 
 
-# YOUR TASK MODE: CUSTOM TASK
+# YOUR TASK MODE: {label}
 
-{task_prompt}
-
-Propose concrete edits from your specialty perspective. Work section by \
-section — propose one edit per paragraph or logical unit rather than \
-rewriting large blocks at once.
+{prompt}
 """ + _PROPOSE_JSON_INSTRUCTIONS
 
 
@@ -323,17 +280,22 @@ def build_agent_system_prompt(
     agent_name: str,
     mode: str,
     system_prompt: str,
-    custom_task_prompt: str | None = None,
+    *,
+    command_name: str | None = None,
+    command_prompt: str | None = None,
 ) -> str:
     """Build a complete system prompt for an agent in the given mode.
 
     system_prompt: the agent's base prompt from config.
-    mode: "propose", "expand", "contract", "custom", "review", or "dissent".
+    mode: "command" (user-facing task) or "review"/"dissent" (internal phase).
+    For "command" mode, command_name and command_prompt must be provided.
     """
-    if mode == "custom" and custom_task_prompt:
-        suffix = build_custom_mode_suffix(custom_task_prompt)
+    if mode == "command":
+        suffix = build_command_mode_suffix(
+            command_name or "task", command_prompt or "",
+        )
     else:
-        suffix = _MODE_SUFFIXES.get(mode, PROPOSE_MODE_SUFFIX)
+        suffix = _INTERNAL_MODE_SUFFIXES.get(mode, "")
     return system_prompt + suffix
 
 

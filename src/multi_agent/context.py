@@ -183,11 +183,10 @@ def _canon_section(canon: dict[str, str]) -> str:
 _SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
 
 
-def _propose_instructions(min_severity: str, task: str | None = None) -> str:
-    """Build propose instructions with severity threshold and optional task."""
-    if task in ("expand", "contract", "custom"):
-        # For task modes, severity filtering doesn't apply -- the
-        # system prompt already describes the goal.
+def _propose_instructions(min_severity: str, severity_filter: bool = True) -> str:
+    """Build propose instructions with optional severity threshold."""
+    if not severity_filter:
+        # Command mode — the system prompt already describes the goal.
         return (
             "\n# YOUR TASK\n"
             "Apply the task described in your system prompt to the content above. "
@@ -228,7 +227,7 @@ def build_propose_prompt(
     canon: dict[str, str],
     staged_diff: str | None = None,
     min_severity: str = "minor",
-    task: str | None = None,
+    severity_filter: bool = True,
 ) -> str:
     """Assemble the prompt for the propose phase."""
     parts: list[str] = [_canon_section(canon)]
@@ -242,7 +241,7 @@ def build_propose_prompt(
         parts.append("\n# DIFF (changes being made)\n")
         parts.append(f"```diff\n{staged_diff}\n```\n")
 
-    parts.append(_propose_instructions(min_severity, task))
+    parts.append(_propose_instructions(min_severity, severity_filter))
     return "".join(parts)
 
 
