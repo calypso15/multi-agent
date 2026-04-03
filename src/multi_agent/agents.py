@@ -299,46 +299,6 @@ def build_agent_system_prompt(
     return system_prompt + suffix
 
 
-KNOWN_TOOLS = {
-    "Bash", "Read", "Glob", "Grep", "Edit", "Write",
-    "Agent", "Skill", "ToolSearch", "WebSearch", "WebFetch",
-}
-
-
-def build_cli_args(
-    agent_name: str,
-    system_prompt: str,
-    model: str | None,
-    repo_root: str,
-    max_turns: int = 0,
-    allowed_tools: list[str] | None = None,
-) -> list[str]:
-    """Build command-line arguments for a `claude` CLI invocation."""
-    args = [
-        "claude",
-        "--print",                       # Non-interactive, print result
-        "--output-format", "stream-json", # Stream JSON events for tool visibility
-        "--verbose",                     # Required for stream-json with --print
-        "--include-partial-messages",    # Stream deltas for progress reporting
-    ]
-
-    if max_turns > 0:
-        args.extend(["--max-turns", str(max_turns)])
-
-    args += [
-        "--system-prompt", system_prompt,
-        "--permission-mode", "bypassPermissions",
-    ]
-
-    # Read is always available so agents can explore reference files.
-    # All other tools are disabled unless explicitly in allowed_tools.
-    effective_tools = {"Read"} | set(allowed_tools or [])
-    disallowed = KNOWN_TOOLS - effective_tools
-    if disallowed:
-        args.extend(["--disallowedTools", ",".join(sorted(disallowed))])
-    args.extend(["--allowedTools", ",".join(sorted(effective_tools))])
-
-    if model:
-        args.extend(["--model", model])
-
-    return args
+# Re-exports — these now live in claude_runner but are kept here for
+# backward compatibility with external importers and existing tests.
+from multi_agent.claude_runner import KNOWN_TOOLS, build_cli_args  # noqa: F401

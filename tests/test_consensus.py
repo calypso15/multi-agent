@@ -4,11 +4,11 @@ Functions already tested in test_merge.py are NOT duplicated here:
 _edit_overlaps_locked, deduplicate_edits, merge_proposals, _filter_self_modified_edits.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from multi_agent.claude_runner import AgentResult
+from multi_agent.backend import AgentResult
 from multi_agent.config import AgentConfig, GeneralConfig, MultiAgentConfig
 from multi_agent.consensus import (
     _build_arbitration_prompt,
@@ -256,31 +256,39 @@ def _make_agent_result(output=None, error=None):
     )
 
 
+def _make_mock_backend(return_value=None, side_effect=None):
+    """Create a mock AgentBackend with a mocked run_agent method."""
+    backend = AsyncMock()
+    backend.run_agent = AsyncMock(return_value=return_value, side_effect=side_effect)
+    return backend
+
+
 class TestRunSingleProposer:
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_successful_run(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_successful_run(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "Changes.", "edits": [
                 {"file": "f.md", "original_text": "old", "replacement_text": "new", "rationale": "fix"},
             ]},
+        ))
+        result = await _run_single_proposer(
+            "alpha", "prompt", backend, "system prompt", "/repo", 60,
         )
-        result = await _run_single_proposer("alpha", "prompt", [], "/repo", 60)
         assert result.agent_name == "alpha"
         assert len(result.edits) == 1
         assert result.error is None
 
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_error_returns_empty_proposal(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(error="timeout")
-        result = await _run_single_proposer("alpha", "prompt", [], "/repo", 60)
+    async def test_error_returns_empty_proposal(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(error="timeout"))
+        result = await _run_single_proposer(
+            "alpha", "prompt", backend, "system prompt", "/repo", 60,
+        )
         assert result.error == "timeout"
         assert result.edits == []
 
 
 class TestRunSingleReviewer:
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_successful_review(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_successful_review(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={
                 "all_approved": False,
                 "summary": "Needs changes.",
@@ -290,19 +298,20 @@ class TestRunSingleReviewer:
                      "rationale": "improvement"},
                 ],
             },
-        )
+        ))
         result = await _run_single_reviewer(
-            "beta", "prompt", [], "/repo", 60, round_number=0,
+            "beta", "prompt", backend, "system prompt", "/repo", 60,
+            round_number=0,
         )
         assert result.agent_name == "beta"
         assert not result.all_approved
         assert len(result.proposal_reviews) == 1
 
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_error_doesnt_block(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(error="crash")
+    async def test_error_doesnt_block(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(error="crash"))
         result = await _run_single_reviewer(
-            "beta", "prompt", [], "/repo", 60, round_number=0,
+            "beta", "prompt", backend, "system prompt", "/repo", 60,
+            round_number=0,
         )
         assert result.all_approved is True
         assert result.error == "crash"
@@ -322,30 +331,28 @@ def _make_config(agents=None):
 
 
 class TestRunProposePhase:
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_calls_each_enabled_agent(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_calls_each_enabled_agent(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "Done.", "edits": []},
-        )
+        ))
         config = _make_config()
         proposals = await run_propose_phase(
-            config, {"f.md": "content"}, {}, None, "/repo",
+            config, {"f.md": "content"}, {}, None, "/repo", backend,
         )
         assert len(proposals) == 2
-        assert mock_run_agent.call_count == 2
+        assert backend.run_agent.call_count == 2
 
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_skips_disabled_agents(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_skips_disabled_agents(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "Done.", "edits": []},
-        )
+        ))
         config = _make_config({
             "alpha": AgentConfig(system_prompt="A."),
             "beta": AgentConfig(system_prompt="B.", enabled=False),
             "gamma": AgentConfig(system_prompt="G."),
         })
         proposals = await run_propose_phase(
-            config, {"f.md": "content"}, {}, None, "/repo",
+            config, {"f.md": "content"}, {}, None, "/repo", backend,
         )
         assert len(proposals) == 2
         names = [p.agent_name for p in proposals]
@@ -353,26 +360,24 @@ class TestRunProposePhase:
 
 
 class TestRunReviewPhase:
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_agents_dont_review_own_proposals(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_agents_dont_review_own_proposals(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={"all_approved": True, "summary": "OK", "proposal_reviews": []},
-        )
+        ))
         config = _make_config()
         proposals = [
             AgentProposal("alpha", [FileEdit("f.md", "old", "new", "")], ""),
             AgentProposal("beta", [FileEdit("f.md", "x", "y", "")], ""),
         ]
         reviews = await run_review_phase(
-            config, proposals, {"f.md": "old x"}, {}, "/repo", 0,
+            config, proposals, {"f.md": "old x"}, {}, "/repo", 0, backend,
         )
         assert len(reviews) == 2
 
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_no_other_proposals_auto_approves(self, mock_run_agent):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_no_other_proposals_auto_approves(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={"all_approved": True, "summary": "OK", "proposal_reviews": []},
-        )
+        ))
         config = _make_config()
         # Only alpha has edits; beta has none
         proposals = [
@@ -380,7 +385,7 @@ class TestRunReviewPhase:
             AgentProposal("beta", [], ""),
         ]
         reviews = await run_review_phase(
-            config, proposals, {"f.md": "old"}, {}, "/repo", 0,
+            config, proposals, {"f.md": "old"}, {}, "/repo", 0, backend,
         )
         # Alpha reviews beta (no edits -> auto-approve), beta reviews alpha
         alpha_review = next(r for r in reviews if r.agent_name == "alpha")
@@ -389,25 +394,23 @@ class TestRunReviewPhase:
 
 
 class TestRunIterationLoop:
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_no_edits_returns_consensus(self, mock_run_agent, tmp_path):
-        mock_run_agent.return_value = _make_agent_result(
+    async def test_no_edits_returns_consensus(self, tmp_path):
+        backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "All good.", "edits": []},
-        )
+        ))
         config = _make_config()
         (tmp_path / "f.md").write_text("content")
         result = await run_iteration_loop(
-            config, str(tmp_path), target_files=["f.md"],
+            config, str(tmp_path), backend, target_files=["f.md"],
         )
         assert result.consensus_reached is True
         assert result.final_edits == []
 
-    @patch("multi_agent.consensus.run_agent", new_callable=AsyncMock)
-    async def test_consensus_in_one_round(self, mock_run_agent, tmp_path):
+    async def test_consensus_in_one_round(self, tmp_path):
         call_count = 0
 
-        async def side_effect(agent_name, prompt, cli_args, repo_root,
-                              timeout, on_progress=None, **kwargs):
+        async def side_effect(agent_name, prompt, system_prompt, repo_root,
+                              timeout, **kwargs):
             nonlocal call_count
             call_count += 1
             # First 2 calls are propose phase
@@ -425,11 +428,11 @@ class TestRunIterationLoop:
                 "proposal_reviews": [],
             })
 
-        mock_run_agent.side_effect = side_effect
+        backend = _make_mock_backend(side_effect=side_effect)
         config = _make_config()
         (tmp_path / "f.md").write_text("old content here")
         result = await run_iteration_loop(
-            config, str(tmp_path), target_files=["f.md"],
+            config, str(tmp_path), backend, target_files=["f.md"],
         )
         assert result.consensus_reached is True
         assert len(result.rounds) == 1

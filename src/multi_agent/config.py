@@ -31,8 +31,12 @@ def get_display_name(agent_key: str, agent_cfg: AgentConfig) -> str:
     return agent_cfg.display_name or agent_key.replace("_", " ").title()
 
 
+KNOWN_BACKENDS = {"claude-cli"}
+
+
 @dataclass
 class GeneralConfig:
+    backend: str = "claude-cli"
     file_patterns: list[str] = field(default_factory=lambda: ["*.md", "*.txt"])
     consensus_threshold: int = 2
     timeout_seconds: int = 600
@@ -162,7 +166,7 @@ def load_config(
                 **{k: v for k, v in cmd_raw.items() if k in valid}
             )
 
-    from multi_agent.agents import KNOWN_TOOLS
+    from multi_agent.claude_runner import KNOWN_TOOLS
 
     for name, agent_cfg in config.agents.items():
         invalid = set(agent_cfg.allowed_tools) - KNOWN_TOOLS
@@ -198,6 +202,11 @@ def load_config(
         raise ValueError(
             f"min_severity must be one of {valid_severities}, "
             f"got '{config.general.min_severity}'"
+        )
+    if config.general.backend not in KNOWN_BACKENDS:
+        raise ValueError(
+            f"backend must be one of {sorted(KNOWN_BACKENDS)}, "
+            f"got '{config.general.backend}'"
         )
 
     # Insert default review command if missing.

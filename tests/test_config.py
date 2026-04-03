@@ -169,3 +169,20 @@ class TestLoadConfig:
         config = load_config(path=p)
         assert "review" in config.commands
         assert config.commands["review"].prompt
+
+    def test_invalid_backend_raises(self, tmp_path):
+        toml = '[general]\nbackend = "openai"\n' + _minimal_toml()
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(ValueError, match="backend"):
+            load_config(path=p)
+
+    def test_valid_backend_accepted(self, tmp_path):
+        toml = '[general]\nbackend = "claude-cli"\n' + _minimal_toml()
+        p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
+        assert config.general.backend == "claude-cli"
+
+    def test_default_backend(self, tmp_path):
+        p = _write_toml(tmp_path, _minimal_toml())
+        config = load_config(path=p)
+        assert config.general.backend == "claude-cli"

@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from multi_agent.backend import AgentResult
 from multi_agent.models import TokenUsage, extract_usage, unwrap_result
 
 # After a timeout, SIGINT the process and try to resume the session
@@ -336,19 +337,58 @@ async def _resume_for_results(
         return None
 
 
+# --- CLI argument building (Claude CLI specific) ---
+
+
+KNOWN_TOOLS = {
+    "Bash", "Read", "Glob", "Grep", "Edit", "Write",
+    "Agent", "Skill", "ToolSearch", "WebSearch", "WebFetch",
+}
+
+
+def build_cli_args(
+    agent_name: str,
+    system_prompt: str,
+    model: str | None,
+    repo_root: str,
+    max_turns: int = 0,
+    allowed_tools: list[str] | None = None,
+) -> list[str]:
+    """Build command-line arguments for a ``claude`` CLI invocation."""
+    args = [
+        "claude",
+        "--print",                       # Non-interactive, print result
+        "--output-format", "stream-json", # Stream JSON events for tool visibility
+        "--verbose",                     # Required for stream-json with --print
+        "--include-partial-messages",    # Stream deltas for progress reporting
+    ]
+
+    if max_turns > 0:
+        args.extend(["--max-turns", str(max_turns)])
+
+    args += [
+        "--system-prompt", system_prompt,
+        "--permission-mode", "bypassPermissions",
+    ]
+
+    # Read is always available so agents can explore reference files.
+    # All other tools are disabled unless explicitly in allowed_tools.
+    effective_tools = {"Read"} | set(allowed_tools or [])
+    disallowed = KNOWN_TOOLS - effective_tools
+    if disallowed:
+        args.extend(["--disallowedTools", ",".join(sorted(disallowed))])
+    args.extend(["--allowedTools", ",".join(sorted(effective_tools))])
+
+    if model:
+        args.extend(["--model", model])
+
+    return args
+
+
 # --- Main agent runner ---
 
 
-@dataclass
-class AgentResult:
-    """Raw result from spawning an agent."""
-    output: dict[str, Any] | None
-    usage: TokenUsage
-    duration_seconds: float
-    error: str | None = None
-
-
-async def run_agent(
+async def _run_agent_impl(
     agent_name: str,
     prompt: str,
     cli_args: list[str],
@@ -460,4 +500,32 @@ async def run_agent(
             output=None, usage=TokenUsage(),
             duration_seconds=time.monotonic() - start,
             error=str(exc),
+        )
+
+
+class ClaudeCliBackend:
+    """AgentBackend implementation using the Claude CLI subprocess."""
+
+    async def run_agent(
+        self,
+        agent_name: str,
+        prompt: str,
+        system_prompt: str,
+        repo_root: str,
+        timeout_seconds: int,
+        *,
+        model: str | None = None,
+        max_turns: int = 0,
+        allowed_tools: list[str] | None = None,
+        on_progress: Callable[[str, str], None] | None = None,
+        progress_label: str = "running",
+        report_tool_use: bool = True,
+    ) -> AgentResult:
+        cli_args = build_cli_args(
+            agent_name, system_prompt, model, repo_root,
+            max_turns=max_turns, allowed_tools=allowed_tools,
+        )
+        return await _run_agent_impl(
+            agent_name, prompt, cli_args, repo_root,
+            timeout_seconds, on_progress, progress_label, report_tool_use,
         )

@@ -9,12 +9,10 @@ from typing import Callable
 from multi_agent.agents import (
     ARBITRATOR_PROMPT,
     build_agent_system_prompt,
-    build_cli_args,
     build_name_normalizer,
 )
-from multi_agent.config import get_display_name
-from multi_agent.claude_runner import run_agent
-from multi_agent.config import MultiAgentConfig
+from multi_agent.backend import AgentBackend
+from multi_agent.config import get_display_name, MultiAgentConfig
 from multi_agent.context import (
     build_propose_prompt,
     build_review_round_prompt,
@@ -224,17 +222,22 @@ def merge_proposals(
 async def _run_single_proposer(
     agent_name: str,
     propose_prompt: str,
-    cli_args: list[str],
+    backend: AgentBackend,
+    system_prompt: str,
     repo_root: str,
     timeout_seconds: int,
     on_progress: Callable[[str, str], None] | None = None,
     model: str | None = None,
+    max_turns: int = 0,
+    allowed_tools: list[str] | None = None,
 ) -> AgentProposal:
     """Run a single agent in propose mode."""
     label = f"proposing ({model})" if model else "proposing"
-    raw = await run_agent(
-        agent_name, propose_prompt, cli_args, repo_root,
-        timeout_seconds, on_progress, progress_label=label,
+    raw = await backend.run_agent(
+        agent_name, propose_prompt, system_prompt, repo_root,
+        timeout_seconds, model=model, max_turns=max_turns,
+        allowed_tools=allowed_tools, on_progress=on_progress,
+        progress_label=label,
     )
     if raw.error:
         return AgentProposal(
@@ -256,19 +259,22 @@ async def _run_single_proposer(
 async def _run_single_reviewer(
     agent_name: str,
     review_prompt: str,
-    cli_args: list[str],
+    backend: AgentBackend,
+    system_prompt: str,
     repo_root: str,
     timeout_seconds: int,
     round_number: int,
     on_progress: Callable[[str, str], None] | None = None,
     normalizer: Callable[[str], str] | None = None,
     model: str | None = None,
+    max_turns: int = 0,
 ) -> AgentReviewResponse:
     """Run a single agent in review mode."""
     model_tag = f" ({model})" if model else ""
-    raw = await run_agent(
-        agent_name, review_prompt, cli_args, repo_root,
-        timeout_seconds, on_progress,
+    raw = await backend.run_agent(
+        agent_name, review_prompt, system_prompt, repo_root,
+        timeout_seconds, model=model, max_turns=max_turns,
+        on_progress=on_progress,
         progress_label=f"reviewing{model_tag} (round {round_number + 1})",
     )
     if raw.error:
@@ -302,7 +308,8 @@ async def _run_single_reviewer(
 async def _run_single_dissenter(
     agent_name: str,
     prompt: str,
-    cli_args: list[str],
+    backend: AgentBackend,
+    system_prompt: str,
     repo_root: str,
     timeout_seconds: int,
     on_progress: Callable[[str, str], None] | None = None,
@@ -310,9 +317,10 @@ async def _run_single_dissenter(
 ) -> Dissent:
     """Run a single agent to collect a dissenting opinion."""
     label = f"dissenting ({model})" if model else "dissenting"
-    raw = await run_agent(
-        agent_name, prompt, cli_args, repo_root,
-        timeout_seconds, on_progress,
+    raw = await backend.run_agent(
+        agent_name, prompt, system_prompt, repo_root,
+        timeout_seconds, model=model, max_turns=1,
+        on_progress=on_progress,
         progress_label=label, report_tool_use=False,
     )
     if raw.error:
@@ -340,6 +348,7 @@ async def run_propose_phase(
     reference: dict[str, str],
     staged_diff: str | None,
     repo_root: str,
+    backend: AgentBackend,
     command_name: str | None = None,
     command_prompt: str | None = None,
     severity_filter: bool = True,
@@ -368,15 +377,11 @@ async def run_propose_phase(
             else config.general.propose_max_turns
         )
         model = command_propose_model or agent_cfg.propose_model
-        cli_args = build_cli_args(
-            name, system_prompt, model, repo_root,
-            max_turns=max_turns,
-            allowed_tools=agent_cfg.allowed_tools or None,
-        )
         proposals.append(await _run_single_proposer(
-            name, propose_prompt, cli_args, repo_root,
+            name, propose_prompt, backend, system_prompt, repo_root,
             config.general.timeout_seconds, on_progress,
-            model=model,
+            model=model, max_turns=max_turns,
+            allowed_tools=agent_cfg.allowed_tools or None,
         ))
 
     return proposals
@@ -443,6 +448,7 @@ async def run_review_phase(
     reference: dict[str, str],
     repo_root: str,
     round_number: int,
+    backend: AgentBackend,
     on_progress: Callable[[str, str], None] | None = None,
     previous_reviews: list[AgentReviewResponse] | None = None,
     display_names: dict[str, str] | None = None,
@@ -490,15 +496,11 @@ async def run_review_phase(
             if agent_cfg.review_max_turns is not None
             else config.general.review_max_turns
         )
-        cli_args = build_cli_args(
-            name, system_prompt, model, repo_root,
-            max_turns=max_turns,
-        )
         reviews.append(await _run_single_reviewer(
-            name, review_prompt, cli_args, repo_root,
+            name, review_prompt, backend, system_prompt, repo_root,
             config.general.timeout_seconds, round_number, on_progress,
             normalizer=normalizer,
-            model=model,
+            model=model, max_turns=max_turns,
         ))
 
     return reviews
@@ -537,6 +539,7 @@ async def _collect_dissents(
     proposals: list[AgentProposal],
     file_contents: dict[str, str],
     repo_root: str,
+    backend: AgentBackend,
     on_progress: Callable[[str, str], None] | None = None,
     command_review_model: str | None = None,
 ) -> list[Dissent]:
@@ -550,12 +553,8 @@ async def _collect_dissents(
             continue
         system_prompt = build_agent_system_prompt(name, "dissent", agent_cfg.system_prompt)
         model = command_review_model or agent_cfg.review_model or agent_cfg.propose_model
-        cli_args = build_cli_args(
-            name, system_prompt, model, repo_root,
-            max_turns=1,
-        )
         result = await _run_single_dissenter(
-            name, prompt, cli_args, repo_root,
+            name, prompt, backend, system_prompt, repo_root,
             config.general.timeout_seconds, on_progress,
             model=model,
         )
@@ -676,10 +675,11 @@ async def _run_arbitration(
     file_contents: dict[str, str],
     config: MultiAgentConfig,
     repo_root: str,
+    backend: AgentBackend,
     on_progress: Callable[[str, str], None] | None = None,
     command_review_model: str | None = None,
 ) -> list[ArbitrationResult]:
-    """Run arbitration on contested edits using run_agent for proper error handling."""
+    """Run arbitration on contested edits using the backend for proper error handling."""
     model = command_review_model
     if model is None:
         for agent_cfg in config.agents.values():
@@ -691,12 +691,10 @@ async def _run_arbitration(
     for i, contested in enumerate(contested_edits):
         key = f"arbitrator_{i}"
         prompt = _build_arbitration_prompt(contested, file_contents)
-        cli_args = build_cli_args(
-            key, ARBITRATOR_PROMPT, model, repo_root, max_turns=1,
-        )
         results.append(await _run_single_arbitrator(
-            key, contested, prompt, cli_args, repo_root,
+            key, contested, prompt, backend, repo_root,
             config.general.timeout_seconds, on_progress,
+            model=model,
         ))
 
     return results
@@ -706,18 +704,19 @@ async def _run_single_arbitrator(
     arb_name: str,
     contested: ContestedEdit,
     prompt: str,
-    cli_args: list[str],
+    backend: AgentBackend,
     repo_root: str,
     timeout_seconds: int,
     on_progress: Callable[[str, str], None] | None = None,
+    model: str | None = None,
 ) -> ArbitrationResult:
-    """Run a single arbitration call via run_agent (with full error handling)."""
+    """Run a single arbitration call via the backend (with full error handling)."""
     if on_progress:
         on_progress("arbitrator", f"resolving conflict in {contested.file}")
 
-    raw = await run_agent(
-        arb_name, prompt, cli_args, repo_root,
-        timeout_seconds, on_progress=None,
+    raw = await backend.run_agent(
+        arb_name, prompt, ARBITRATOR_PROMPT, repo_root,
+        timeout_seconds, model=model, max_turns=1,
         progress_label="arbitrating", report_tool_use=False,
     )
 
@@ -745,6 +744,7 @@ async def _run_single_arbitrator(
 async def run_iteration_loop(
     config: MultiAgentConfig,
     repo_root: str,
+    backend: AgentBackend,
     target_files: list[str] | None = None,
     command_name: str | None = None,
     command_prompt: str | None = None,
@@ -758,6 +758,7 @@ async def run_iteration_loop(
 
     If target_files is None, reviews staged files. Otherwise reviews the
     specified files from the working tree.
+    backend: the AgentBackend to use for running agents.
     command_name/command_prompt: the TOML command driving this run.
     severity_filter: whether to apply min_severity filtering.
     command_propose_model/command_review_model: per-command model overrides.
@@ -805,7 +806,7 @@ async def run_iteration_loop(
     total_usage = TokenUsage()
 
     proposals = await run_propose_phase(
-        config, file_contents, reference, staged_diff, repo_root,
+        config, file_contents, reference, staged_diff, repo_root, backend,
         command_name=command_name, command_prompt=command_prompt,
         severity_filter=severity_filter,
         command_propose_model=command_propose_model,
@@ -866,7 +867,7 @@ async def run_iteration_loop(
     for round_num in range(config.general.max_rounds):
         reviews = await run_review_phase(
             config, current_proposals, file_contents, reference,
-            repo_root, round_num, on_progress,
+            repo_root, round_num, backend, on_progress,
             previous_reviews=previous_reviews,
             display_names=display_names,
             normalizer=normalizer,
@@ -911,7 +912,7 @@ async def run_iteration_loop(
                     on_phase(ArbitrationStart(contested=contested))
 
                 arb_results = await _run_arbitration(
-                    contested, file_contents, config, repo_root,
+                    contested, file_contents, config, repo_root, backend,
                     on_progress,
                     command_review_model=command_review_model,
                 )
@@ -1067,8 +1068,8 @@ async def run_iteration_loop(
                         break
 
             arb_results = await _run_arbitration(
-                contested, file_contents, config, repo_root, on_progress,
-                command_review_model=command_review_model,
+                contested, file_contents, config, repo_root, backend,
+                on_progress, command_review_model=command_review_model,
             )
             for ar, winner_text in zip(arb_results, winner_texts):
                 total_usage += ar.usage
@@ -1098,7 +1099,7 @@ async def run_iteration_loop(
         if dissenting_agents:
             dissents = await _collect_dissents(
                 config, dissenting_agents, current_proposals,
-                file_contents, repo_root, on_progress,
+                file_contents, repo_root, backend, on_progress,
                 command_review_model=command_review_model,
             )
             for d in dissents:

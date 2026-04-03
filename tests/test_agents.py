@@ -4,10 +4,10 @@ from multi_agent.agents import (
     DISSENT_MODE_SUFFIX,
     REVIEW_MODE_SUFFIX,
     build_agent_system_prompt,
-    build_cli_args,
     build_command_mode_suffix,
     build_name_normalizer,
 )
+from multi_agent.claude_runner import build_cli_args
 from multi_agent.config import AgentConfig
 
 

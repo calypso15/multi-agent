@@ -147,6 +147,16 @@ def _resolve_task(
     )
 
 
+def _create_backend(config):
+    """Create the agent backend from config."""
+    from multi_agent.backend import AgentBackend  # noqa: F401
+
+    if config.general.backend == "claude-cli":
+        from multi_agent.claude_runner import ClaudeCliBackend
+        return ClaudeCliBackend()
+    raise ValueError(f"Unknown backend: {config.general.backend}")
+
+
 def _run_iteration_and_present(
     config,
     repo_root: Path,
@@ -177,6 +187,8 @@ def _run_iteration_and_present(
         count_approvals,
     )
 
+    backend = _create_backend(config)
+
     def on_phase(event: PhaseEvent) -> None:
         match event:
             case ProposeDone(proposals=proposals):
@@ -194,7 +206,7 @@ def _run_iteration_and_present(
     print_header(files_display, ref_count, ref_size_kb, uncommitted_ref, task=display_task)
 
     result = asyncio.run(run_iteration_loop(
-        config, str(repo_root), target_files=target_files,
+        config, str(repo_root), backend, target_files=target_files,
         command_name=command_name, command_prompt=command_prompt,
         severity_filter=severity_filter,
         command_propose_model=command_propose_model,
