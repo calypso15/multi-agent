@@ -4,13 +4,19 @@ count_approvals and sanitize_edit_path are already tested in test_merge.py.
 """
 
 from multi_agent.models import (
+    AgentProposal,
+    AgentReviewResponse,
     FileEdit,
     ProposalReview,
     TokenUsage,
+    count_blocking_approvals,
     extract_json,
     extract_usage,
+    filter_edits_by_severity,
+    is_blocking_severity,
     parse_edits,
     parse_proposal_reviews,
+    severity_index,
     unwrap_result,
 )
 
@@ -112,12 +118,14 @@ class TestUnwrapResult:
 
 class TestParseEdits:
     def test_well_formed(self):
-        raw = [{"file": "foo.md", "original_text": "old", "replacement_text": "new", "rationale": "fix"}]
+        raw = [{"file": "foo.md", "original_text": "old", "replacement_text": "new",
+                "rationale": "fix", "severity": "major"}]
         edits = parse_edits(raw)
         assert len(edits) == 1
         assert edits[0].file == "foo.md"
         assert edits[0].original_text == "old"
         assert edits[0].replacement_text == "new"
+        assert edits[0].severity == "major"
 
     def test_invalid_paths_dropped(self):
         raw = [
@@ -136,9 +144,21 @@ class TestParseEdits:
         assert edits[0].original_text == ""
         assert edits[0].replacement_text == ""
         assert edits[0].rationale == ""
+        assert edits[0].severity == "minor"
 
     def test_empty_list(self):
         assert parse_edits([]) == []
+
+    def test_severity_defaults_to_minor(self):
+        raw = [{"file": "f.md", "original_text": "a", "replacement_text": "b", "rationale": ""}]
+        edits = parse_edits(raw)
+        assert edits[0].severity == "minor"
+
+    def test_invalid_severity_clamped(self):
+        raw = [{"file": "f.md", "original_text": "a", "replacement_text": "b",
+                "rationale": "", "severity": "extreme"}]
+        edits = parse_edits(raw)
+        assert edits[0].severity == "minor"
 
 
 # --- parse_proposal_reviews ---
@@ -173,3 +193,102 @@ class TestParseProposalReviews:
         assert reviews[0].verdict == "APPROVE"
         assert reviews[0].modified_replacement is None
         assert reviews[0].rationale == ""
+
+
+# --- severity helpers ---
+
+
+class TestSeverityIndex:
+    def test_known_values(self):
+        assert severity_index("critical") == 0
+        assert severity_index("major") == 1
+        assert severity_index("minor") == 2
+        assert severity_index("suggestion") == 3
+
+    def test_unknown_defaults_to_minor(self):
+        assert severity_index("extreme") == 2
+
+
+class TestFilterEditsBySeverity:
+    def test_filters_below_threshold(self):
+        edits = [
+            FileEdit("f.md", "a", "b", "", "critical"),
+            FileEdit("f.md", "c", "d", "", "minor"),
+            FileEdit("f.md", "e", "f", "", "suggestion"),
+        ]
+        result = filter_edits_by_severity(edits, "major")
+        assert len(result) == 1
+        assert result[0].severity == "critical"
+
+    def test_suggestion_keeps_all(self):
+        edits = [
+            FileEdit("f.md", "a", "b", "", "minor"),
+            FileEdit("f.md", "c", "d", "", "suggestion"),
+        ]
+        result = filter_edits_by_severity(edits, "suggestion")
+        assert len(result) == 2
+
+
+class TestIsBlockingSeverity:
+    def test_critical_always_blocking(self):
+        assert is_blocking_severity("critical", "suggestion") is True
+
+    def test_suggestion_not_blocking_at_major(self):
+        assert is_blocking_severity("suggestion", "major") is False
+
+    def test_equal_to_threshold(self):
+        assert is_blocking_severity("major", "major") is True
+
+    def test_minor_not_blocking_at_major(self):
+        assert is_blocking_severity("minor", "major") is False
+
+
+class TestCountBlockingApprovals:
+    def _edit(self, severity="major"):
+        return FileEdit("f.md", "old", "new", "fix", severity)
+
+    def test_all_approved(self):
+        reviews = [
+            AgentReviewResponse("beta", True, [], ""),
+        ]
+        proposals = [AgentProposal("alpha", [self._edit()], "")]
+        assert count_blocking_approvals(reviews, proposals, "major") == 1
+
+    def test_modify_blocking_edit_not_counted(self):
+        reviews = [
+            AgentReviewResponse("beta", False, [
+                ProposalReview("alpha", 0, "MODIFY", "new", "fix"),
+            ], ""),
+        ]
+        proposals = [AgentProposal("alpha", [self._edit("critical")], "")]
+        assert count_blocking_approvals(reviews, proposals, "major") == 0
+
+    def test_modify_non_blocking_edit_counted(self):
+        reviews = [
+            AgentReviewResponse("beta", False, [
+                ProposalReview("alpha", 0, "MODIFY", "new", "fix"),
+            ], ""),
+        ]
+        proposals = [AgentProposal("alpha", [self._edit("suggestion")], "")]
+        assert count_blocking_approvals(reviews, proposals, "major") == 1
+
+    def test_error_not_counted(self):
+        reviews = [
+            AgentReviewResponse("beta", True, [], "", error="crash"),
+        ]
+        proposals = [AgentProposal("alpha", [self._edit()], "")]
+        assert count_blocking_approvals(reviews, proposals, "major") == 0
+
+    def test_mixed_blocking_and_non_blocking(self):
+        reviews = [
+            AgentReviewResponse("beta", False, [
+                ProposalReview("alpha", 0, "MODIFY", "x", ""),
+                ProposalReview("alpha", 1, "MODIFY", "y", ""),
+            ], ""),
+        ]
+        proposals = [AgentProposal("alpha", [
+            self._edit("critical"),
+            self._edit("suggestion"),
+        ], "")]
+        # One MODIFY targets blocking, so not counted
+        assert count_blocking_approvals(reviews, proposals, "major") == 0

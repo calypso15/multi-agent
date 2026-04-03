@@ -44,6 +44,7 @@ class GeneralConfig:
     max_reference_size_kb: int = 500
     max_rounds: int = 3
     min_severity: str = "minor"
+    min_blocking_severity: str = "major"
     propose_max_turns: int = 0  # 0 = unlimited (no --max-turns flag)
     review_max_turns: int = 0
 
@@ -202,6 +203,20 @@ def load_config(
         raise ValueError(
             f"min_severity must be one of {valid_severities}, "
             f"got '{config.general.min_severity}'"
+        )
+    if config.general.min_blocking_severity not in valid_severities:
+        raise ValueError(
+            f"min_blocking_severity must be one of {valid_severities}, "
+            f"got '{config.general.min_blocking_severity}'"
+        )
+    from multi_agent.models import severity_index
+    if severity_index(config.general.min_blocking_severity) > severity_index(
+        config.general.min_severity,
+    ):
+        raise ValueError(
+            f"min_blocking_severity ('{config.general.min_blocking_severity}') "
+            f"cannot be less severe than min_severity "
+            f"('{config.general.min_severity}')"
         )
     if config.general.backend not in KNOWN_BACKENDS:
         raise ValueError(

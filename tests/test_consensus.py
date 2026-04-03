@@ -1,7 +1,7 @@
 """Tests for orchestration helpers and mocked phase runners.
 
 Functions already tested in test_merge.py are NOT duplicated here:
-_edit_overlaps_locked, deduplicate_edits, merge_proposals, _filter_self_modified_edits.
+_edit_overlaps_locked, deduplicate_edits, merge_proposals.
 """
 
 from unittest.mock import AsyncMock
@@ -39,17 +39,17 @@ from multi_agent.models import (
 
 class TestValidateEdits:
     def test_keeps_matching_edits(self):
-        edits = [FileEdit("f.md", "hello", "hi", "")]
+        edits = [FileEdit("f.md", "hello", "hi", "", "minor")]
         result = validate_edits(edits, {"f.md": "say hello world"})
         assert len(result) == 1
 
     def test_drops_missing_file(self):
-        edits = [FileEdit("missing.md", "hello", "hi", "")]
+        edits = [FileEdit("missing.md", "hello", "hi", "", "minor")]
         result = validate_edits(edits, {"f.md": "hello"})
         assert len(result) == 0
 
     def test_drops_unmatched_text(self):
-        edits = [FileEdit("f.md", "not here", "replacement", "")]
+        edits = [FileEdit("f.md", "not here", "replacement", "", "minor")]
         result = validate_edits(edits, {"f.md": "actual content"})
         assert len(result) == 0
 
@@ -116,7 +116,10 @@ class TestDetectStall:
                 agent_name=f"agent_{i}", all_approved=i < approvals,
                 proposal_reviews=[], summary="",
             ))
-        return IterationRound(round_number=0, reviews=reviews, consensus_reached=False)
+        return IterationRound(
+            round_number=0, reviews=reviews, consensus_reached=False,
+            approvals=approvals,
+        )
 
     def test_fewer_than_two_rounds(self):
         assert _detect_stall([self._round(1)]) is False
@@ -140,7 +143,7 @@ class TestFindContestedEdits:
 
     def test_edit_modified_in_two_rounds(self):
         proposals = [
-            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "")], ""),
+            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
         ]
         rounds = [
             IterationRound(0, [
@@ -161,7 +164,7 @@ class TestFindContestedEdits:
 
     def test_edit_modified_only_once_not_contested(self):
         proposals = [
-            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "")], ""),
+            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
         ]
         rounds = [
             IterationRound(0, [
@@ -178,7 +181,7 @@ class TestFindContestedEdits:
 
     def test_approved_agent_excluded(self):
         proposals = [
-            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "")], ""),
+            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
         ]
         rounds = [
             IterationRound(0, [
@@ -208,7 +211,7 @@ class TestFindContestedEdits:
 class TestBuildDissentPrompt:
     def test_includes_edits(self):
         proposals = [
-            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "fix")], ""),
+            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "fix", "minor")], ""),
         ]
         result = _build_dissent_prompt(proposals, {"f.md": "old"})
         assert "old" in result
@@ -217,7 +220,7 @@ class TestBuildDissentPrompt:
     def test_skips_empty_proposals(self):
         proposals = [
             AgentProposal("alpha", [], "No edits."),
-            AgentProposal("beta", [FileEdit("f.md", "old", "new", "")], ""),
+            AgentProposal("beta", [FileEdit("f.md", "old", "new", "", "minor")], ""),
         ]
         result = _build_dissent_prompt(proposals, {"f.md": "old"})
         assert "alpha" not in result
@@ -366,8 +369,8 @@ class TestRunReviewPhase:
         ))
         config = _make_config()
         proposals = [
-            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "")], ""),
-            AgentProposal("beta", [FileEdit("f.md", "x", "y", "")], ""),
+            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
+            AgentProposal("beta", [FileEdit("f.md", "x", "y", "", "minor")], ""),
         ]
         reviews = await run_review_phase(
             config, proposals, {"f.md": "old x"}, {}, "/repo", 0, backend,
@@ -381,7 +384,7 @@ class TestRunReviewPhase:
         config = _make_config()
         # Only alpha has edits; beta has none
         proposals = [
-            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "")], ""),
+            AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
             AgentProposal("beta", [], ""),
         ]
         reviews = await run_review_phase(

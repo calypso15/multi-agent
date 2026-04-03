@@ -155,8 +155,17 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
         elif not proposal.edits:
             status = Text("no edits", style="dim")
         else:
+            from collections import Counter
+            sev_counts = Counter(e.severity for e in proposal.edits)
+            sev_parts = ", ".join(
+                f"{cnt} {sev}" for sev, cnt in sorted(
+                    sev_counts.items(),
+                    key=lambda x: ["critical", "major", "minor", "suggestion"].index(x[0]),
+                )
+            )
             files = sorted({e.file for e in proposal.edits})
             status = Text(f"{len(proposal.edits)} edit(s) ", style="bold cyan")
+            status.append(f"[{sev_parts}] ", style="dim")
             status.append(f"({', '.join(files)})", style="dim")
 
         rows.append((display, proposal.agent_name, status, proposal.duration_seconds))
@@ -174,17 +183,25 @@ def print_review_round(
     round_number: int,
     reviews: list[AgentReviewResponse],
     consensus_threshold: int,
+    blocking_approvals: int | None = None,
 ) -> None:
     """Print the results of a review round."""
     from multi_agent.models import count_approvals
 
     approvals = count_approvals(reviews)
     total = len(reviews)
-    reached = approvals >= consensus_threshold
+    effective = blocking_approvals if blocking_approvals is not None else approvals
+    reached = effective >= consensus_threshold
 
     color = "green" if reached else "yellow"
     label = f"Review Round {round_number + 1}"
-    status = f"{approvals}/{total} approved (need {consensus_threshold})"
+    if blocking_approvals is not None and blocking_approvals != approvals:
+        status = (
+            f"{blocking_approvals}/{total} blocking-approved, "
+            f"{approvals}/{total} fully approved (need {consensus_threshold})"
+        )
+    else:
+        status = f"{approvals}/{total} approved (need {consensus_threshold})"
 
     console.print()
     console.print(Rule(

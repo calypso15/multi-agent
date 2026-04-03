@@ -68,8 +68,13 @@ PROPOSAL_OUTPUT_FORMAT = json.dumps({
                             "type": "string",
                             "description": "Why this edit is necessary from your specialty perspective.",
                         },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["critical", "major", "minor", "suggestion"],
+                            "description": "Severity of the issue this edit addresses.",
+                        },
                     },
-                    "required": ["file", "original_text", "replacement_text", "rationale"],
+                    "required": ["file", "original_text", "replacement_text", "rationale", "severity"],
                 },
             },
         },
@@ -133,6 +138,11 @@ For each change, propose an exact text replacement:
 (whitespace, punctuation, and all). It must appear exactly once in the file.
 - "replacement_text" is your proposed replacement for that text.
 - Explain WHY from your domain expertise in "rationale".
+- Classify the severity of the issue the edit addresses:
+  - "critical" — correctness, safety, or logical errors
+  - "major" — significant quality or consistency issues
+  - "minor" — small improvements, clarity
+  - "suggestion" — optional, stylistic
 
 IMPORTANT — keep edits small and focused:
 - Prefer MANY small edits over FEW large ones. Target one paragraph or \
@@ -152,6 +162,7 @@ Return your response as JSON matching this schema:
   - "original_text": exact text to replace (verbatim from file)
   - "replacement_text": your proposed replacement
   - "rationale": why this edit is needed from your specialty
+  - "severity": "critical", "major", "minor", or "suggestion"
 """
 
 REVIEW_MODE_SUFFIX = """\

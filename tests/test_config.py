@@ -146,6 +146,37 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="min_severity"):
             load_config(path=p)
 
+    def test_invalid_blocking_severity_raises(self, tmp_path):
+        toml = '[general]\nmin_blocking_severity = "extreme"\n' + _minimal_toml()
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(ValueError, match="min_blocking_severity"):
+            load_config(path=p)
+
+    def test_blocking_less_severe_than_min_raises(self, tmp_path):
+        toml = (
+            '[general]\nmin_severity = "major"\n'
+            'min_blocking_severity = "suggestion"\n'
+            + _minimal_toml()
+        )
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(ValueError, match="min_blocking_severity.*less severe"):
+            load_config(path=p)
+
+    def test_valid_blocking_severity(self, tmp_path):
+        toml = (
+            '[general]\nmin_severity = "minor"\n'
+            'min_blocking_severity = "major"\n'
+            + _minimal_toml()
+        )
+        p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
+        assert config.general.min_blocking_severity == "major"
+
+    def test_default_blocking_severity(self, tmp_path):
+        p = _write_toml(tmp_path, _minimal_toml())
+        config = load_config(path=p)
+        assert config.general.min_blocking_severity == "major"
+
     def test_command_references_unknown_agent_raises(self, tmp_path):
         toml = _minimal_toml(
             '[commands.lint]\nprompt = "Lint."\nagents = ["alpha", "ghost"]\n'

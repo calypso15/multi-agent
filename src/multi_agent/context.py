@@ -183,34 +183,22 @@ def _reference_section(reference: dict[str, str]) -> str:
 _SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
 
 
-def _propose_instructions(min_severity: str, severity_filter: bool = True) -> str:
-    """Build propose instructions with optional severity threshold."""
-    if not severity_filter:
-        # Command mode — the system prompt already describes the goal.
-        return (
-            "\n# YOUR TASK\n"
-            "Apply the task described in your system prompt to the content above. "
-            "Use the Read tool to examine any reference files relevant to your review.\n\n"
-            "Return your response as JSON.\n"
-        )
-
-    # Default: review for issues
+def _propose_instructions(min_severity: str) -> str:
+    """Build propose instructions with severity threshold."""
     idx = _SEVERITY_ORDER.index(min_severity) if min_severity in _SEVERITY_ORDER else 2
     allowed = _SEVERITY_ORDER[:idx + 1]
     severity_note = ""
     if min_severity != "suggestion":
         severity_note = (
-            f"\nIMPORTANT: Only propose edits for issues that are "
-            f"{' or '.join(allowed)} severity. "
-            f"Do NOT propose edits for purely stylistic or cosmetic issues"
-            f"{' or minor concerns' if min_severity in ('critical', 'major') else ''}.\n"
+            f"\nEdits below {min_severity} severity will be filtered out. "
+            f"Focus on issues that are {' or '.join(allowed)} severity.\n"
         )
     return (
         "\n# YOUR TASK\n"
-        "Review the content above from your specialty perspective and propose "
-        "concrete edits. Use the Read tool to examine reference files as needed.\n"
+        "Apply the task described in your system prompt to the content above. "
+        "Use the Read tool to examine any reference files relevant to your review.\n"
         + severity_note
-        + "\nReturn your response as JSON.\n"
+        + "\nClassify each edit's severity. Return your response as JSON.\n"
     )
 
 _REVIEW_ROUND_INSTRUCTIONS = (
@@ -227,7 +215,6 @@ def build_propose_prompt(
     reference: dict[str, str],
     staged_diff: str | None = None,
     min_severity: str = "minor",
-    severity_filter: bool = True,
 ) -> str:
     """Assemble the prompt for the propose phase."""
     parts: list[str] = [_reference_section(reference)]
@@ -241,7 +228,7 @@ def build_propose_prompt(
         parts.append("\n# DIFF (changes being made)\n")
         parts.append(f"```diff\n{staged_diff}\n```\n")
 
-    parts.append(_propose_instructions(min_severity, severity_filter))
+    parts.append(_propose_instructions(min_severity))
     return "".join(parts)
 
 
@@ -251,9 +238,15 @@ def build_review_round_prompt(
     reference: dict[str, str],
     round_number: int,
     display_names: dict[str, str] | None = None,
+    skip_edits: set[tuple[str, int]] | None = None,
 ) -> str:
-    """Assemble the prompt for a review round."""
+    """Assemble the prompt for a review round.
+
+    skip_edits: set of (agent_name, edit_index) pairs to omit from the
+    prompt while preserving original edit indices.
+    """
     _display_names = display_names or {}
+    _skip = skip_edits or set()
 
     parts: list[str] = [_reference_section(reference)]
 
@@ -266,13 +259,17 @@ def build_review_round_prompt(
 
     parts.append(f"\n# PROPOSALS TO REVIEW (Round {round_number + 1})\n")
     for proposal in proposals:
-        if not proposal.edits:
+        visible = [
+            (i, edit) for i, edit in enumerate(proposal.edits)
+            if (proposal.agent_name, i) not in _skip
+        ]
+        if not visible:
             continue
         display = _display_names.get(proposal.agent_name, proposal.agent_name)
         parts.append(f"\n## Proposals from {display} ({proposal.agent_name})\n")
         parts.append(f"Summary: {proposal.summary}\n")
-        for i, edit in enumerate(proposal.edits):
-            parts.append(f"\n### Edit {i} \u2014 {edit.file}\n")
+        for i, edit in visible:
+            parts.append(f"\n### Edit {i} ({edit.severity}) \u2014 {edit.file}\n")
             parts.append(f"**Original text:**\n```\n{edit.original_text}\n```\n")
             parts.append(f"**Replacement:**\n```\n{edit.replacement_text}\n```\n")
             parts.append(f"**Rationale:** {edit.rationale}\n")

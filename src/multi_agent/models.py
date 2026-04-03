@@ -8,6 +8,31 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Union
 
 
+SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
+
+
+def severity_index(severity: str) -> int:
+    """Return the index of a severity level (lower = more severe)."""
+    try:
+        return SEVERITY_ORDER.index(severity)
+    except ValueError:
+        return SEVERITY_ORDER.index("minor")  # fallback
+
+
+def filter_edits_by_severity(
+    edits: list[FileEdit],
+    min_severity: str,
+) -> list[FileEdit]:
+    """Drop edits whose severity is below *min_severity*."""
+    threshold = severity_index(min_severity)
+    return [e for e in edits if severity_index(e.severity) <= threshold]
+
+
+def is_blocking_severity(severity: str, min_blocking_severity: str) -> bool:
+    """Return True if *severity* is at least as severe as the blocking threshold."""
+    return severity_index(severity) <= severity_index(min_blocking_severity)
+
+
 # --- Token usage ---
 
 
@@ -49,6 +74,7 @@ class FileEdit:
     original_text: str
     replacement_text: str
     rationale: str
+    severity: str
 
 
 @dataclass
@@ -86,6 +112,7 @@ class IterationRound:
     round_number: int
     reviews: list[AgentReviewResponse]
     consensus_reached: bool
+    approvals: int = 0
 
 
 @dataclass
@@ -143,6 +170,7 @@ class ReviewDone:
     round_number: int
     reviews: list[AgentReviewResponse]
     consensus_threshold: int
+    blocking_approvals: int = 0
 
 
 @dataclass
@@ -169,6 +197,44 @@ PhaseEvent = Union[ProposeDone, ReviewDone, ArbitrationStart, ArbitrationDone, D
 def count_approvals(reviews: list[AgentReviewResponse]) -> int:
     """Count reviews that approved with no error."""
     return sum(1 for r in reviews if r.all_approved and r.error is None)
+
+
+def count_blocking_approvals(
+    reviews: list[AgentReviewResponse],
+    proposals: list[AgentProposal],
+    min_blocking_severity: str,
+) -> int:
+    """Count reviews that don't object to any blocking-severity edit.
+
+    A review counts as a blocking-approval if:
+    - It explicitly approved all edits, OR
+    - Every MODIFY verdict targets an edit whose severity is below
+      *min_blocking_severity* (i.e. non-blocking).
+    """
+    proposal_map = {p.agent_name: p for p in proposals}
+    count = 0
+    for r in reviews:
+        if r.error is not None:
+            continue
+        if r.all_approved:
+            count += 1
+            continue
+        all_non_blocking = True
+        for pr in r.proposal_reviews:
+            if pr.verdict != "MODIFY":
+                continue
+            prop = proposal_map.get(pr.original_agent)
+            if prop is None or pr.edit_index >= len(prop.edits):
+                all_non_blocking = False
+                break
+            if is_blocking_severity(
+                prop.edits[pr.edit_index].severity, min_blocking_severity,
+            ):
+                all_non_blocking = False
+                break
+        if all_non_blocking:
+            count += 1
+    return count
 
 
 def sanitize_edit_path(filepath: str) -> str:
@@ -273,11 +339,14 @@ def parse_edits(raw_edits: list[dict[str, Any]]) -> list[FileEdit]:
             filepath = sanitize_edit_path(filepath)
         except ValueError:
             continue  # skip edits with invalid paths
+        raw_sev = item.get("severity", "minor")
+        sev = raw_sev if raw_sev in SEVERITY_ORDER else "minor"
         edits.append(FileEdit(
             file=filepath,
             original_text=item.get("original_text", ""),
             replacement_text=item.get("replacement_text", ""),
             rationale=item.get("rationale", ""),
+            severity=sev,
         ))
     return edits
 

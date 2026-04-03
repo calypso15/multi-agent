@@ -32,6 +32,11 @@ max_rounds = 3
 # Set to "major" to skip minor/stylistic nitpicks and focus on real issues
 min_severity = "minor"
 
+# Minimum severity for edits to block consensus: "critical", "major", "minor", or "suggestion"
+# Edits below this threshold are included but won't prevent consensus.
+# Must be at least as severe as min_severity.
+min_blocking_severity = "major"
+
 # Maximum turns per agent (0 = unlimited, let agent decide)
 # propose_max_turns = 0
 # review_max_turns = 0

@@ -169,7 +169,6 @@ def _run_iteration_and_present(
     hook_mode: bool,
     command_name: str | None = None,
     command_prompt: str | None = None,
-    severity_filter: bool = True,
     command_propose_model: str | None = None,
     command_review_model: str | None = None,
     task_label: str | None = None,
@@ -184,7 +183,6 @@ def _run_iteration_and_present(
         PhaseEvent,
         ProposeDone,
         ReviewDone,
-        count_approvals,
     )
 
     backend = _create_backend(config)
@@ -193,8 +191,10 @@ def _run_iteration_and_present(
         match event:
             case ProposeDone(proposals=proposals):
                 print_proposals_summary(proposals)
-            case ReviewDone(round_number=rn, reviews=reviews, consensus_threshold=ct):
-                print_review_round(rn, reviews, ct)
+            case ReviewDone(round_number=rn, reviews=reviews,
+                            consensus_threshold=ct,
+                            blocking_approvals=ba):
+                print_review_round(rn, reviews, ct, blocking_approvals=ba)
             case ArbitrationStart(contested=contested):
                 print_arbitration_start(contested)
             case ArbitrationDone(results=results):
@@ -208,7 +208,6 @@ def _run_iteration_and_present(
     result = asyncio.run(run_iteration_loop(
         config, str(repo_root), backend, target_files=target_files,
         command_name=command_name, command_prompt=command_prompt,
-        severity_filter=severity_filter,
         command_propose_model=command_propose_model,
         command_review_model=command_review_model,
         on_progress=print_progress,
@@ -234,8 +233,7 @@ def _run_iteration_and_present(
     if result.consensus_reached:
         last_round = result.rounds[-1] if result.rounds else None
         if last_round:
-            approvals = count_approvals(last_round.reviews)
-            print_iteration_success(approvals, len(last_round.reviews))
+            print_iteration_success(last_round.approvals, len(last_round.reviews))
         else:
             print_iteration_success(0, 0)
     else:
@@ -311,14 +309,10 @@ def _review_common(
 
     cmd_name, cmd_config = _resolve_task(task_name, config)
 
-    # Determine command and severity filtering.
+    # Determine command.
     if cmd_name is None:
-        # No --task: default to the "review" command with severity filtering.
         cmd_name = "review"
         cmd_config = config.commands["review"]
-        severity_filter = True
-    else:
-        severity_filter = False
 
     task_label = cmd_name
 
@@ -328,7 +322,6 @@ def _review_common(
             # No --task given: treat bare --prompt as a standalone command.
             cmd_name = "prompt"
             cmd_config = CommandConfig(prompt=prompt)
-            severity_filter = False
             task_label = "prompt"
         else:
             # Append user instructions to the command's prompt.
@@ -404,7 +397,6 @@ def _review_common(
         hook_mode=hook_mode,
         command_name=cmd_name,
         command_prompt=command_prompt,
-        severity_filter=severity_filter,
         command_propose_model=cmd_config.propose_model,
         command_review_model=cmd_config.review_model,
         task_label=task_label,
@@ -512,6 +504,7 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
     console.print(f"  Timeout: {config.general.timeout_seconds}s")
     console.print(f"  Max rounds: {config.general.max_rounds}")
     console.print(f"  Min severity: {config.general.min_severity}")
+    console.print(f"  Min blocking severity: {config.general.min_blocking_severity}")
     console.print(f"  Propose max turns: {config.general.propose_max_turns}")
     console.print(f"  Review max turns: {config.general.review_max_turns}")
     console.print(f"  Reference directories: {config.general.reference_directories}")

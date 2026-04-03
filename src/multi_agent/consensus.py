@@ -39,6 +39,8 @@ from multi_agent.models import (
     ReviewDone,
     TokenUsage,
     count_approvals,
+    count_blocking_approvals,
+    filter_edits_by_severity,
     parse_edits,
     parse_proposal_reviews,
 )
@@ -57,6 +59,8 @@ __all__ = [
     "ProposalReview",
     "TokenUsage",
     "count_approvals",
+    "count_blocking_approvals",
+    "filter_edits_by_severity",
     "merge_proposals",
     "resolve_file_args",
     "run_iteration_loop",
@@ -198,6 +202,7 @@ def merge_proposals(
                     original_text=edit.original_text,
                     replacement_text=modifications[key],
                     rationale=edit.rationale,
+                    severity=edit.severity,
                 ))
             else:
                 new_edits.append(edit)
@@ -351,7 +356,6 @@ async def run_propose_phase(
     backend: AgentBackend,
     command_name: str | None = None,
     command_prompt: str | None = None,
-    severity_filter: bool = True,
     command_propose_model: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
@@ -359,7 +363,6 @@ async def run_propose_phase(
     propose_prompt = build_propose_prompt(
         file_contents, reference, staged_diff,
         min_severity=config.general.min_severity,
-        severity_filter=severity_filter,
     )
 
     proposals: list[AgentProposal] = []
@@ -404,43 +407,6 @@ def _last_modifiers(
     return last
 
 
-def _filter_self_modified_edits(
-    proposals: list[AgentProposal],
-    agent_name: str,
-    previous_reviews: list[AgentReviewResponse],
-) -> list[AgentProposal]:
-    """Return proposals with edits this agent last modified removed.
-
-    After merge_proposals, an edit may contain text written by a reviewing
-    agent rather than the original proposer.  There is no point in asking
-    that reviewer to re-review their own text, so we strip those edits
-    from the prompt they receive.
-    """
-    last_mods = _last_modifiers(previous_reviews)
-    skip = {
-        key for key, modifier in last_mods.items()
-        if modifier == agent_name
-    }
-    if not skip:
-        return proposals
-
-    filtered = []
-    for proposal in proposals:
-        kept = [
-            e for i, e in enumerate(proposal.edits)
-            if (proposal.agent_name, i) not in skip
-        ]
-        filtered.append(AgentProposal(
-            agent_name=proposal.agent_name,
-            edits=kept,
-            summary=proposal.summary,
-            duration_seconds=proposal.duration_seconds,
-            error=proposal.error,
-            usage=proposal.usage,
-        ))
-    return filtered
-
-
 async def run_review_phase(
     config: MultiAgentConfig,
     proposals: list[AgentProposal],
@@ -463,18 +429,29 @@ async def run_review_phase(
     """
     reviews: list[AgentReviewResponse] = []
 
+    # Pre-compute which edits each agent last modified so they can be
+    # skipped in the prompt (without removing them, which would shift
+    # indices and break merge_proposals).
+    last_mods = _last_modifiers(previous_reviews) if previous_reviews else {}
+
     for name, agent_cfg in config.agents.items():
         if not agent_cfg.enabled:
             continue
         other_proposals = [p for p in proposals if p.agent_name != name]
 
-        # Also strip edits this agent was the last to modify
-        if previous_reviews:
-            other_proposals = _filter_self_modified_edits(
-                other_proposals, name, previous_reviews,
-            )
+        # Build skip set: edits this agent last modified
+        skip_edits = {
+            key for key, modifier in last_mods.items()
+            if modifier == name
+        }
 
-        if not any(p.edits for p in other_proposals):
+        # Check if any visible edits remain
+        has_visible = any(
+            (p.agent_name, i) not in skip_edits
+            for p in other_proposals
+            for i in range(len(p.edits))
+        )
+        if not has_visible:
             reviews.append(AgentReviewResponse(
                 agent_name=name,
                 all_approved=True,
@@ -486,6 +463,7 @@ async def run_review_phase(
         review_prompt = build_review_round_prompt(
             other_proposals, file_contents, reference, round_number,
             display_names=display_names,
+            skip_edits=skip_edits,
         )
         system_prompt = build_agent_system_prompt(
             name, "review", agent_cfg.system_prompt,
@@ -571,7 +549,7 @@ def _detect_stall(rounds: list[IterationRound]) -> bool:
     """Detect if the review loop has stalled (no improvement in the latest round)."""
     if len(rounds) < 2:
         return False
-    return count_approvals(rounds[-1].reviews) <= count_approvals(rounds[-2].reviews)
+    return rounds[-1].approvals <= rounds[-2].approvals
 
 
 def _find_contested_edits(
@@ -748,7 +726,6 @@ async def run_iteration_loop(
     target_files: list[str] | None = None,
     command_name: str | None = None,
     command_prompt: str | None = None,
-    severity_filter: bool = True,
     command_propose_model: str | None = None,
     command_review_model: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
@@ -760,7 +737,6 @@ async def run_iteration_loop(
     specified files from the working tree.
     backend: the AgentBackend to use for running agents.
     command_name/command_prompt: the TOML command driving this run.
-    severity_filter: whether to apply min_severity filtering.
     command_propose_model/command_review_model: per-command model overrides.
     on_phase: callback for typed phase events (ProposeDone, ReviewDone, etc.).
     """
@@ -808,7 +784,6 @@ async def run_iteration_loop(
     proposals = await run_propose_phase(
         config, file_contents, reference, staged_diff, repo_root, backend,
         command_name=command_name, command_prompt=command_prompt,
-        severity_filter=severity_filter,
         command_propose_model=command_propose_model,
         on_progress=on_progress,
     )
@@ -818,9 +793,12 @@ async def run_iteration_loop(
     if on_phase:
         on_phase(ProposeDone(proposals=proposals))
 
-    # 4. Validate and deduplicate
+    # 4. Validate, filter by severity, and deduplicate
     for proposal in proposals:
         proposal.edits = validate_edits(proposal.edits, file_contents)
+        proposal.edits = filter_edits_by_severity(
+            proposal.edits, config.general.min_severity,
+        )
 
     all_edits = []
     for p in proposals:
@@ -876,13 +854,17 @@ async def run_iteration_loop(
         for r in reviews:
             total_usage += r.usage
 
-        approvals = count_approvals(reviews)
+        approvals = count_blocking_approvals(
+            reviews, current_proposals,
+            config.general.min_blocking_severity,
+        )
         consensus_reached = approvals >= config.general.consensus_threshold
 
         rounds.append(IterationRound(
             round_number=round_num,
             reviews=reviews,
             consensus_reached=consensus_reached,
+            approvals=approvals,
         ))
 
         if on_phase:
@@ -890,6 +872,7 @@ async def run_iteration_loop(
                 round_number=round_num,
                 reviews=reviews,
                 consensus_threshold=config.general.consensus_threshold,
+                blocking_approvals=approvals,
             ))
 
         # Track the version with the highest approval count
@@ -899,6 +882,10 @@ async def run_iteration_loop(
             best_round = round_num
 
         if consensus_reached:
+            # Apply any non-blocking modifications before exiting.
+            current_proposals = merge_proposals(
+                current_proposals, reviews, locked_regions, file_contents,
+            )
             consensus = True
             break
 
@@ -933,6 +920,7 @@ async def run_iteration_loop(
                                 original_text=edit.original_text,
                                 replacement_text=arb_lookup[key],
                                 rationale=edit.rationale,
+                                severity=edit.severity,
                             )
 
                 # Lock arbitrated regions
@@ -1084,7 +1072,8 @@ async def run_iteration_loop(
     # Derive final_edits (one per changed file) for truthiness checks
     final_edits = [
         FileEdit(file=fp, original_text=file_contents.get(fp, ""),
-                 replacement_text=mt, rationale="merged from all agent proposals")
+                 replacement_text=mt, rationale="merged from all agent proposals",
+                 severity="major")
         for fp, mt in merge_result.merged_texts.items()
     ]
 
@@ -1092,10 +1081,29 @@ async def run_iteration_loop(
     dissents: list[Dissent] = []
     if not consensus and rounds and final_edits:
         best_round_reviews = rounds[best_round].reviews
-        dissenting_agents = [
-            r.agent_name for r in best_round_reviews
-            if not r.all_approved and r.error is None
-        ]
+        # Identify agents that objected to blocking-severity edits
+        from multi_agent.models import is_blocking_severity
+        proposal_map = {p.agent_name: p for p in current_proposals}
+        dissenting_agents = []
+        for r in best_round_reviews:
+            if r.error is not None or r.all_approved:
+                continue
+            has_blocking_objection = False
+            for pr in r.proposal_reviews:
+                if pr.verdict != "MODIFY":
+                    continue
+                prop = proposal_map.get(pr.original_agent)
+                if prop is None or pr.edit_index >= len(prop.edits):
+                    has_blocking_objection = True
+                    break
+                if is_blocking_severity(
+                    prop.edits[pr.edit_index].severity,
+                    config.general.min_blocking_severity,
+                ):
+                    has_blocking_objection = True
+                    break
+            if has_blocking_objection:
+                dissenting_agents.append(r.agent_name)
         if dissenting_agents:
             dissents = await _collect_dissents(
                 config, dissenting_agents, current_proposals,

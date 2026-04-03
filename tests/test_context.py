@@ -47,23 +47,23 @@ class TestReferenceSection:
 
 
 class TestProposeInstructions:
-    def test_command_mode_no_severity(self):
-        result = _propose_instructions("minor", severity_filter=False)
-        assert "YOUR TASK" in result
-        assert "system prompt" in result
-        assert "severity" not in result.lower()
-
-    def test_minor_severity(self):
+    def test_includes_severity_classification(self):
         result = _propose_instructions("minor")
-        assert "critical" in result
-        assert "major" in result
+        assert "severity" in result.lower()
+        assert "YOUR TASK" in result
+
+    def test_minor_severity_filter_note(self):
+        result = _propose_instructions("minor")
         assert "minor" in result
 
-    def test_major_severity_excludes_minor(self):
+    def test_major_severity_filter_note(self):
         result = _propose_instructions("major")
         assert "critical" in result
         assert "major" in result
-        assert "minor concerns" in result.lower()
+
+    def test_suggestion_no_filter_note(self):
+        result = _propose_instructions("suggestion")
+        assert "filtered out" not in result
 
 
 # --- build_propose_prompt ---
@@ -104,7 +104,7 @@ class TestBuildReviewRoundPrompt:
         proposals = [
             AgentProposal(
                 agent_name="alpha",
-                edits=[FileEdit("f.md", "old", "new", "fix")],
+                edits=[FileEdit("f.md", "old", "new", "fix", "minor")],
                 summary="Summary.",
             ),
         ]
@@ -116,7 +116,7 @@ class TestBuildReviewRoundPrompt:
         proposals = [
             AgentProposal(
                 agent_name="alpha",
-                edits=[FileEdit("f.md", "old", "new", "fix")],
+                edits=[FileEdit("f.md", "old", "new", "fix", "minor")],
                 summary="Summary.",
             ),
         ]
@@ -130,12 +130,23 @@ class TestBuildReviewRoundPrompt:
         proposals = [
             AgentProposal(
                 agent_name="alpha",
-                edits=[FileEdit("f.md", "old", "new", "fix")],
+                edits=[FileEdit("f.md", "old", "new", "fix", "minor")],
                 summary="Summary.",
             ),
         ]
         result = build_review_round_prompt(proposals, {"f.md": "text"}, {}, 2)
         assert "Round 3" in result
+
+    def test_severity_shown_in_edit_headers(self):
+        proposals = [
+            AgentProposal(
+                agent_name="alpha",
+                edits=[FileEdit("f.md", "old", "new", "fix", "critical")],
+                summary="Summary.",
+            ),
+        ]
+        result = build_review_round_prompt(proposals, {"f.md": "old text"}, {}, 0)
+        assert "(critical)" in result
 
 
 # --- _apply_edits_to_text ---
@@ -145,7 +156,7 @@ class TestApplyEditsToText:
     def test_single_edit(self):
         result = _apply_edits_to_text(
             "The quick brown fox.",
-            [FileEdit("f.md", "quick brown", "slow red", "")],
+            [FileEdit("f.md", "quick brown", "slow red", "", "minor")],
         )
         assert result == "The slow red fox."
 
@@ -153,8 +164,8 @@ class TestApplyEditsToText:
         result = _apply_edits_to_text(
             "The quick brown fox jumps over the lazy dog.",
             [
-                FileEdit("f.md", "quick brown", "slow red", ""),
-                FileEdit("f.md", "lazy dog", "sleepy cat", ""),
+                FileEdit("f.md", "quick brown", "slow red", "", "minor"),
+                FileEdit("f.md", "lazy dog", "sleepy cat", "", "minor"),
             ],
         )
         assert "slow red" in result
@@ -163,7 +174,7 @@ class TestApplyEditsToText:
     def test_missing_original_skipped(self):
         result = _apply_edits_to_text(
             "The quick brown fox.",
-            [FileEdit("f.md", "not found", "replacement", "")],
+            [FileEdit("f.md", "not found", "replacement", "", "minor")],
         )
         assert result == "The quick brown fox."
 

@@ -8,7 +8,6 @@ from multi_agent.models import (
 )
 from multi_agent.consensus import (
     _edit_overlaps_locked,
-    _filter_self_modified_edits,
     deduplicate_edits,
     merge_proposals,
 )
@@ -24,10 +23,10 @@ class TestMergeNonOverlapping:
             {"f.md": "The quick brown fox jumps over the lazy dog."},
             [
                 AgentProposal(agent_name="a", edits=[
-                    FileEdit("f.md", "quick brown", "swift auburn", ""),
+                    FileEdit("f.md", "quick brown", "swift auburn", "", "minor"),
                 ], summary=""),
                 AgentProposal(agent_name="b", edits=[
-                    FileEdit("f.md", "lazy dog", "sleeping hound", ""),
+                    FileEdit("f.md", "lazy dog", "sleeping hound", "", "minor"),
                 ], summary=""),
             ],
         )
@@ -40,10 +39,10 @@ class TestMergeNonOverlapping:
             {"f.md": "The ship accelerated to 3c using conventional thrusters."},
             [
                 AgentProposal(agent_name="a", edits=[
-                    FileEdit("f.md", "accelerated to 3c", "accelerated to 0.3c", ""),
+                    FileEdit("f.md", "accelerated to 3c", "accelerated to 0.3c", "", "critical"),
                 ], summary=""),
                 AgentProposal(agent_name="b", edits=[
-                    FileEdit("f.md", "conventional thrusters", "ion drive engines", ""),
+                    FileEdit("f.md", "conventional thrusters", "ion drive engines", "", "minor"),
                 ], summary=""),
             ],
         )
@@ -59,11 +58,11 @@ class TestMergeNonOverlapping:
             },
             [
                 AgentProposal(agent_name="a", edits=[
-                    FileEdit("ch1.md", "Tuesday", "Wednesday", ""),
-                    FileEdit("ch2.md", "president", "prime minister", ""),
+                    FileEdit("ch1.md", "Tuesday", "Wednesday", "", "minor"),
+                    FileEdit("ch2.md", "president", "prime minister", "", "minor"),
                 ], summary=""),
                 AgentProposal(agent_name="b", edits=[
-                    FileEdit("ch1.md", "aliens arrived", "visitors landed", ""),
+                    FileEdit("ch1.md", "aliens arrived", "visitors landed", "", "minor"),
                 ], summary=""),
             ],
         )
@@ -79,10 +78,10 @@ class TestMergeIdentical:
             {"f.md": "The date was January 5th, 2045."},
             [
                 AgentProposal(agent_name="a", edits=[
-                    FileEdit("f.md", "January 5th, 2045", "March 12th, 2046", ""),
+                    FileEdit("f.md", "January 5th, 2045", "March 12th, 2046", "", "minor"),
                 ], summary=""),
                 AgentProposal(agent_name="b", edits=[
-                    FileEdit("f.md", "January 5th, 2045", "March 12th, 2046", ""),
+                    FileEdit("f.md", "January 5th, 2045", "March 12th, 2046", "", "minor"),
                 ], summary=""),
             ],
         )
@@ -96,10 +95,10 @@ class TestMergeConflicts:
             {"f.md": "The radiation levels were dangerously high."},
             [
                 AgentProposal(agent_name="sci", edits=[
-                    FileEdit("f.md", "dangerously high", "within safe limits", ""),
+                    FileEdit("f.md", "dangerously high", "within safe limits", "", "minor"),
                 ], summary=""),
                 AgentProposal(agent_name="pol", edits=[
-                    FileEdit("f.md", "dangerously high", "catastrophically elevated", ""),
+                    FileEdit("f.md", "dangerously high", "catastrophically elevated", "", "minor"),
                 ], summary=""),
             ],
         )
@@ -112,10 +111,10 @@ class TestMergeConflicts:
             {"f.md": "The quick brown fox jumps over the lazy dog."},
             [
                 AgentProposal(agent_name="a", edits=[
-                    FileEdit("f.md", "quick brown fox", "swift auburn fox", ""),
+                    FileEdit("f.md", "quick brown fox", "swift auburn fox", "", "minor"),
                 ], summary=""),
                 AgentProposal(agent_name="b", edits=[
-                    FileEdit("f.md", "brown fox jumps", "red fox leaps", ""),
+                    FileEdit("f.md", "brown fox jumps", "red fox leaps", "", "minor"),
                 ], summary=""),
             ],
         )
@@ -137,7 +136,7 @@ class TestMergeGarbledOutput:
             {"f.md": original},
             [
                 AgentProposal(agent_name="a", edits=[
-                    FileEdit("f.md", "Ice Reformation", "Failed Ice Reformation", ""),
+                    FileEdit("f.md", "Ice Reformation", "Failed Ice Reformation", "", "minor"),
                 ], summary=""),
                 AgentProposal(agent_name="b", edits=[
                     FileEdit(
@@ -149,6 +148,7 @@ class TestMergeGarbledOutput:
                         "- Persistent open-water zone forms\n"
                         "- Surrounding ice patterns permanently altered",
                         "",
+                        "minor",
                     ),
                 ], summary=""),
             ],
@@ -183,27 +183,27 @@ class TestEditOverlapsLocked:
     LOCKED = {"f.md": [(4, 28)]}
 
     def test_exact_match(self):
-        edit = FileEdit("f.md", "quick brown fox jumps", "X", "")
+        edit = FileEdit("f.md", "quick brown fox jumps", "X", "", "minor")
         assert _edit_overlaps_locked(edit, self.FILE_CONTENTS, self.LOCKED)
 
     def test_partial_overlap_start(self):
-        edit = FileEdit("f.md", "The quick brown", "X", "")
+        edit = FileEdit("f.md", "The quick brown", "X", "", "minor")
         assert _edit_overlaps_locked(edit, self.FILE_CONTENTS, self.LOCKED)
 
     def test_partial_overlap_end(self):
-        edit = FileEdit("f.md", "fox jumps over", "X", "")
+        edit = FileEdit("f.md", "fox jumps over", "X", "", "minor")
         assert _edit_overlaps_locked(edit, self.FILE_CONTENTS, self.LOCKED)
 
     def test_no_overlap(self):
-        edit = FileEdit("f.md", "lazy dog", "X", "")
+        edit = FileEdit("f.md", "lazy dog", "X", "", "minor")
         assert not _edit_overlaps_locked(edit, self.FILE_CONTENTS, self.LOCKED)
 
     def test_different_file(self):
-        edit = FileEdit("g.md", "quick brown fox jumps", "X", "")
+        edit = FileEdit("g.md", "quick brown fox jumps", "X", "", "minor")
         assert not _edit_overlaps_locked(edit, self.FILE_CONTENTS, self.LOCKED)
 
     def test_no_locked_regions(self):
-        edit = FileEdit("f.md", "quick brown", "X", "")
+        edit = FileEdit("f.md", "quick brown", "X", "", "minor")
         assert not _edit_overlaps_locked(edit, self.FILE_CONTENTS, {})
 
 
@@ -218,8 +218,8 @@ class TestMergeProposalsLocked:
     def _proposals(self):
         return [
             AgentProposal(agent_name="sci", edits=[
-                FileEdit("f.md", "quick brown fox jumps", "arbitrated text", ""),
-                FileEdit("f.md", "lazy dog", "sleeping hound", ""),
+                FileEdit("f.md", "quick brown fox jumps", "arbitrated text", "", "minor"),
+                FileEdit("f.md", "lazy dog", "sleeping hound", "", "minor"),
             ], summary=""),
         ]
 
@@ -245,7 +245,7 @@ class TestMergeProposalsLocked:
     def test_partial_overlap_also_locked(self):
         proposals = [
             AgentProposal(agent_name="sci", edits=[
-                FileEdit("f.md", "brown fox jumps over", "new text", ""),
+                FileEdit("f.md", "brown fox jumps over", "new text", "", "minor"),
             ], summary=""),
         ]
         reviews = [
@@ -346,8 +346,8 @@ class TestSanitizeEditPath:
 class TestDeduplicateEdits:
     def test_exact_duplicates_removed(self):
         edits = [
-            FileEdit("f.md", "foo", "bar", "r1"),
-            FileEdit("f.md", "foo", "bar", "r2"),
+            FileEdit("f.md", "foo", "bar", "r1", "minor"),
+            FileEdit("f.md", "foo", "bar", "r2", "minor"),
         ]
         kept, dropped = deduplicate_edits(edits)
         assert len(kept) == 1
@@ -355,8 +355,8 @@ class TestDeduplicateEdits:
 
     def test_different_replacements_kept(self):
         edits = [
-            FileEdit("f.md", "foo", "bar", "r1"),
-            FileEdit("f.md", "foo", "baz", "r2"),
+            FileEdit("f.md", "foo", "bar", "r1", "minor"),
+            FileEdit("f.md", "foo", "baz", "r2", "minor"),
         ]
         kept, dropped = deduplicate_edits(edits)
         assert len(kept) == 2
@@ -364,119 +364,54 @@ class TestDeduplicateEdits:
 
     def test_different_files_kept(self):
         edits = [
-            FileEdit("a.md", "foo", "bar", "r1"),
-            FileEdit("b.md", "foo", "bar", "r2"),
+            FileEdit("a.md", "foo", "bar", "r1", "minor"),
+            FileEdit("b.md", "foo", "bar", "r2", "minor"),
         ]
         kept, dropped = deduplicate_edits(edits)
         assert len(kept) == 2
         assert len(dropped) == 0
 
 
-# --- _filter_self_modified_edits ---
+# --- skip_edits in review prompt (index-preserving skip) ---
 
 
-class TestFilterSelfModifiedEdits:
-    """Agents should not re-review edits they last modified."""
+class TestSkipEditsInReviewPrompt:
+    """Skipped edits should be omitted from the prompt but indices preserved."""
 
     def _proposals(self):
         return [
             AgentProposal(agent_name="socio", edits=[
-                FileEdit("f.md", "aaa", "bbb", "edit 0"),
-                FileEdit("f.md", "ccc", "ddd", "edit 1"),
-                FileEdit("f.md", "eee", "fff", "edit 2"),
-            ], summary=""),
-            AgentProposal(agent_name="canon", edits=[
-                FileEdit("f.md", "ggg", "hhh", "edit 0"),
+                FileEdit("f.md", "aaa", "bbb", "edit 0", "minor"),
+                FileEdit("f.md", "ccc", "ddd", "edit 1", "minor"),
+                FileEdit("f.md", "eee", "fff", "edit 2", "minor"),
             ], summary=""),
         ]
 
-    def test_self_modified_edit_excluded(self):
-        """sci modified socio's edit 1 → sci should not see it next round."""
-        prev_reviews = [
-            AgentReviewResponse(
-                agent_name="sci", all_approved=False,
-                proposal_reviews=[
-                    ProposalReview(original_agent="socio", edit_index=1,
-                                   verdict="MODIFY", modified_replacement="new", rationale=""),
-                ],
-                summary="",
-            ),
-        ]
-        filtered = _filter_self_modified_edits(
-            self._proposals(), "sci", prev_reviews,
+    def test_skipped_edit_omitted_but_indices_preserved(self):
+        from multi_agent.context import build_review_round_prompt
+        prompt = build_review_round_prompt(
+            self._proposals(), {"f.md": "aaa ccc eee"}, {}, 0,
+            skip_edits={("socio", 1)},
         )
-        socio = next(p for p in filtered if p.agent_name == "socio")
-        # edit 0 and edit 2 survive, edit 1 is removed
-        assert len(socio.edits) == 2
-        assert socio.edits[0].original_text == "aaa"
-        assert socio.edits[1].original_text == "eee"
+        assert "Edit 0" in prompt
+        assert "Edit 1" not in prompt  # skipped
+        assert "Edit 2" in prompt      # index preserved, not renumbered to 1
+        # The skipped edit's replacement "ddd" should not appear
+        assert "ddd" not in prompt
 
-    def test_other_agents_still_see_edit(self):
-        """canon should still see the edit sci modified."""
-        prev_reviews = [
-            AgentReviewResponse(
-                agent_name="sci", all_approved=False,
-                proposal_reviews=[
-                    ProposalReview(original_agent="socio", edit_index=1,
-                                   verdict="MODIFY", modified_replacement="new", rationale=""),
-                ],
-                summary="",
-            ),
-        ]
-        filtered = _filter_self_modified_edits(
-            self._proposals(), "canon", prev_reviews,
+    def test_no_skip_shows_all(self):
+        from multi_agent.context import build_review_round_prompt
+        prompt = build_review_round_prompt(
+            self._proposals(), {"f.md": "aaa ccc eee"}, {}, 0,
         )
-        socio = next(p for p in filtered if p.agent_name == "socio")
-        assert len(socio.edits) == 3  # all edits visible
+        assert "Edit 0" in prompt
+        assert "Edit 1" in prompt
+        assert "Edit 2" in prompt
 
-    def test_later_modifier_wins(self):
-        """If canon modified AFTER sci, sci should still see the edit."""
-        prev_reviews = [
-            AgentReviewResponse(
-                agent_name="sci", all_approved=False,
-                proposal_reviews=[
-                    ProposalReview(original_agent="socio", edit_index=1,
-                                   verdict="MODIFY", modified_replacement="sci ver", rationale=""),
-                ],
-                summary="",
-            ),
-            AgentReviewResponse(
-                agent_name="canon", all_approved=False,
-                proposal_reviews=[
-                    ProposalReview(original_agent="socio", edit_index=1,
-                                   verdict="MODIFY", modified_replacement="canon ver", rationale=""),
-                ],
-                summary="",
-            ),
-        ]
-        filtered = _filter_self_modified_edits(
-            self._proposals(), "sci", prev_reviews,
+    def test_all_edits_skipped_omits_proposal(self):
+        from multi_agent.context import build_review_round_prompt
+        prompt = build_review_round_prompt(
+            self._proposals(), {"f.md": "aaa ccc eee"}, {}, 0,
+            skip_edits={("socio", 0), ("socio", 1), ("socio", 2)},
         )
-        socio = next(p for p in filtered if p.agent_name == "socio")
-        # canon was last modifier → sci should review it
-        assert len(socio.edits) == 3
-
-    def test_no_previous_reviews_no_filter(self):
-        """First round — no filtering needed."""
-        filtered = _filter_self_modified_edits(
-            self._proposals(), "sci", [],
-        )
-        socio = next(p for p in filtered if p.agent_name == "socio")
-        assert len(socio.edits) == 3
-
-    def test_does_not_mutate_originals(self):
-        """Filtering should return copies, not mutate the input proposals."""
-        proposals = self._proposals()
-        prev_reviews = [
-            AgentReviewResponse(
-                agent_name="sci", all_approved=False,
-                proposal_reviews=[
-                    ProposalReview(original_agent="socio", edit_index=1,
-                                   verdict="MODIFY", modified_replacement="new", rationale=""),
-                ],
-                summary="",
-            ),
-        ]
-        _filter_self_modified_edits(proposals, "sci", prev_reviews)
-        # Original should be untouched
-        assert len(proposals[0].edits) == 3
+        assert "socio" not in prompt.lower() or "Proposals from" not in prompt
