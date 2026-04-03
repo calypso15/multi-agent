@@ -23,5 +23,9 @@ dev = [
 [project.scripts]
 multi-agent = "multi_agent.cli:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/multi_agent"]
