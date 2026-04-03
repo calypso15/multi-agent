@@ -281,3 +281,7 @@ multi-agent/
     ├── config.py             # TOML config loading
     └── hook.py               # Git pre-commit hook installer
 ```
+
+## License
+
+[MIT](LICENSE)
