@@ -38,6 +38,11 @@ python -m multi_agent check-config   # validate config (needs --repo or a multi_
 - **Keep modules focused** — Config loading in `config.py`, prompt assembly in `agents.py` + `context.py`, orchestration in `consensus.py`, display in `output.py`. Don't let orchestration logic leak into output or vice versa.
 - **Validate at the boundary** — Config validation happens once in `load_config()`. Internal code trusts that config fields are valid after that point.
 
+## Git workflow
+
+- **Do not commit or push** unless explicitly instructed to.
+- **Reverting changes** — Before using `git checkout -- <file>` or `git restore`, check `git log --oneline -1 <file>` and `git diff --stat <file>` to confirm the latest commit reflects the state you want to restore to. Restoring discards all uncommitted changes irreversibly — if work has been done since the last commit, it will be lost.
+
 ## Testing
 
 Tests are in `tests/test_merge.py`. They use arbitrary agent names ("a", "b") and don't depend on any specific agent configuration.
