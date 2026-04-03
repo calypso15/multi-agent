@@ -8,8 +8,8 @@ When you run a review (manually or via pre-commit hook), the system launches you
 
 The review runs in phases:
 
-1. **Propose** — Each agent proposes concrete edits (search-and-replace) from their specialty perspective, running in parallel.
-2. **Review** — All agents review all proposals. Each either approves or suggests modifications.
+1. **Propose** — Each agent proposes concrete edits (search-and-replace) from their specialty perspective, each classified by severity (`critical`, `major`, `minor`, `suggestion`). Edits below `min_severity` are dropped.
+2. **Review** — All agents review all proposals. Each either approves or suggests modifications. Edits below `min_blocking_severity` don't prevent consensus but modifications are still applied.
 3. **Iterate** — If consensus isn't reached, modifications are merged and agents review again (up to `max_rounds`).
 4. **Arbitrate** — If the loop stalls (no improvement for 2 rounds), contested edits are sent to an impartial arbitrator that picks the better version. Arbitrated regions are locked from further modification.
 5. **Present** — The final set of changes is shown as a unified diff. If consensus wasn't reached, dissenting agents provide brief opinions. You choose whether to apply the changes.
@@ -115,8 +115,8 @@ python -m multi_agent --repo ~/git/my-project uninstall-hook
   Sociopolitical: done — 0 edit(s)
 
 ──────────────────── Propose Phase ────────────────────────────
-  Scientific Rigor    1 edit(s) (docs/overview.md)     8.2s
-  Canon Continuity    2 edit(s) (docs/overview.md)    12.1s
+  Scientific Rigor    1 edit(s) [1 critical] (docs/overview.md)     8.2s
+  Canon Continuity    2 edit(s) [1 major, 1 minor] (docs/overview.md)    12.1s
   Sociopolitical      no edits                            9.7s
 
   3 total edit(s) proposed
@@ -164,7 +164,8 @@ Place a `multi_agent.toml` in your repository. See `multi_agent.example.toml` fo
 | `reference_directories` | `["reference"]` | Directories containing established reference files |
 | `max_reference_size_kb` | `500` | Max total size of reference content loaded |
 | `max_rounds` | `3` | Maximum propose-review iteration rounds |
-| `min_severity` | `"minor"` | Minimum severity for proposed edits: `"critical"`, `"major"`, `"minor"`, or `"suggestion"`. Set to `"major"` to skip nitpicks. |
+| `min_severity` | `"minor"` | Minimum severity for proposed edits: `"critical"`, `"major"`, `"minor"`, or `"suggestion"`. Edits below this are dropped. |
+| `min_blocking_severity` | `"major"` | Minimum severity for edits to block consensus. Edits below this are included but won't prevent consensus. Must be at least as severe as `min_severity`. |
 | `propose_max_turns` | `0` (unlimited) | Max turns per agent in the propose phase |
 | `review_max_turns` | `0` (unlimited) | Max turns per agent in review rounds |
 
@@ -224,7 +225,8 @@ consensus_threshold = 2
 timeout_seconds = 600
 reference_directories = ["reference"]
 max_rounds = 5
-min_severity = "major"
+min_severity = "minor"
+min_blocking_severity = "major"
 propose_max_turns = 5
 review_max_turns = 2
 

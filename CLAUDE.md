@@ -20,7 +20,7 @@ python -m multi_agent check-config   # validate config (needs --repo or a multi_
 - **`claude_runner.py`** — `ClaudeCliBackend` (implements `AgentBackend`), Claude CLI subprocess management, `build_cli_args()`, `KNOWN_TOOLS`, stream-json parsing, timeout/resume recovery.
 - **`consensus.py`** — Orchestration: propose phase, review phase, iteration loop, arbitration, dissent collection. Receives an `AgentBackend` instance and calls `backend.run_agent()` for all agent interactions.
 - **`context.py`** — Builds user prompts (file contents, reference file listing, review round proposals). Separate from system prompts.
-- **`models.py`** — Dataclasses (`FileEdit`, `AgentProposal`, `AgentReviewResponse`, etc.), JSON parsing, path sanitization.
+- **`models.py`** — Dataclasses (`FileEdit`, `AgentProposal`, `AgentReviewResponse`, etc.), JSON parsing, path sanitization. Severity helpers: `SEVERITY_ORDER`, `severity_index()`, `filter_edits_by_severity()`, `is_blocking_severity()`, `count_blocking_approvals()`.
 - **`output.py`** — Rich terminal formatting. Call `init_agent_styles(config.agents)` after loading config to set up display names and colors.
 - **`merge.py`** — N-way edit merging via diff-match-patch.
 - **`cli.py`** — `ConfigGroup` auto-generates top-level Click commands from TOML `[commands]`. Built-in commands: `review`, `install-hook`, `uninstall-hook`, `check-config`. `_create_backend()` factory instantiates the backend from config.
@@ -31,7 +31,9 @@ python -m multi_agent check-config   # validate config (needs --repo or a multi_
 - System prompt (agent specialty + mode suffix) and user prompt (file contents + instructions) are separate — system prompt is passed to `backend.run_agent()`, user prompt is the conversation input.
 - `build_name_normalizer(config.agents)` returns a closure for mapping agent name variants (display name, lowercase, spaces) back to config keys. Built once per run, threaded to `parse_proposal_reviews()`.
 - `init_agent_styles()` sets module-level dicts in `output.py` — avoids threading display names/colors through every output function.
-- Agents never review their own proposals or edits they last modified.
+- **Severity classification** — Each `FileEdit` carries a `severity` field (`"critical"`, `"major"`, `"minor"`, `"suggestion"`). Two thresholds in `GeneralConfig`: `min_severity` drops edits below the threshold after parsing; `min_blocking_severity` determines which edits can block consensus. `count_blocking_approvals()` counts a review as approving if its only MODIFY verdicts target non-blocking edits. Non-blocking modifications are still applied via `merge_proposals` before the consensus break.
+- **Self-modification skip** — Edits an agent last modified are skipped in the review prompt via `skip_edits` passed to `build_review_round_prompt()`. Edits are omitted from the prompt but indices are preserved (no renumbering), so `merge_proposals` index lookups remain correct.
+- Agents never review their own proposals.
 - `build_cli_args()` and `KNOWN_TOOLS` live in `claude_runner.py` (Claude CLI concerns). Re-exported from `agents.py` for backward compatibility.
 
 ## Development practices
