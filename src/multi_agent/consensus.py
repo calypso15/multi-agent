@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from pathlib import Path
 from typing import Callable
@@ -479,15 +480,17 @@ async def run_iteration_loop(
         on_phase(ProposeDone(proposals=proposals))
 
     # 4. Validate, filter by severity, and deduplicate
-    for proposal in proposals:
-        proposal.edits = validate_edits(proposal.edits, file_contents)
-        proposal.edits = filter_edits_by_severity(
-            proposal.edits, resolved.min_severity,
-        )
+    proposals = [
+        dataclasses.replace(p, edits=filter_edits_by_severity(
+            validate_edits(p.edits, file_contents), resolved.min_severity,
+        ))
+        for p in proposals
+    ]
 
     # Deduplicate identical edits across proposals — keep the first
     # occurrence and remove from all other proposals.
     seen_edits: set[tuple[str, str, str]] = set()
+    deduped: list[AgentProposal] = []
     for proposal in proposals:
         kept: list[FileEdit] = []
         for edit in proposal.edits:
@@ -495,7 +498,8 @@ async def run_iteration_loop(
             if key not in seen_edits:
                 seen_edits.add(key)
                 kept.append(edit)
-        proposal.edits = kept
+        deduped.append(dataclasses.replace(proposal, edits=kept))
+    proposals = deduped
 
     all_edits = [e for p in proposals for e in p.edits]
 
@@ -602,17 +606,15 @@ async def run_iteration_loop(
                     (ar.file, ar.original_text): ar.replacement_text
                     for ar in arb_results
                 }
-                for proposal in current_proposals:
-                    for i, edit in enumerate(proposal.edits):
-                        key = (edit.file, edit.original_text)
-                        if key in arb_lookup:
-                            proposal.edits[i] = FileEdit(
-                                file=edit.file,
-                                original_text=edit.original_text,
-                                replacement_text=arb_lookup[key],
-                                rationale=edit.rationale,
-                                severity=edit.severity,
-                            )
+                current_proposals = [
+                    dataclasses.replace(proposal, edits=[
+                        dataclasses.replace(edit, replacement_text=arb_lookup[key])
+                        if (key := (edit.file, edit.original_text)) in arb_lookup
+                        else edit
+                        for edit in proposal.edits
+                    ])
+                    for proposal in current_proposals
+                ]
 
                 # Lock arbitrated regions
                 for ar in arb_results:
@@ -641,10 +643,12 @@ async def run_iteration_loop(
         )
 
         # If an agent's only modifications targeted locked regions, they
-        # effectively approved -- update their review for consensus counting.
+        # effectively approved -- build updated reviews for consensus counting.
         if locked_regions:
+            updated_reviews: list[AgentReviewResponse] = []
             for review in reviews:
                 if review.all_approved or review.error:
+                    updated_reviews.append(review)
                     continue
                 has_unlocked_mod = False
                 for pr in review.proposal_reviews:
@@ -657,12 +661,19 @@ async def run_iteration_loop(
                         ):
                             has_unlocked_mod = True
                             break
-                if not has_unlocked_mod:
-                    review.all_approved = True
+                if has_unlocked_mod:
+                    updated_reviews.append(review)
+                else:
+                    updated_reviews.append(
+                        dataclasses.replace(review, all_approved=True)
+                    )
+            reviews = updated_reviews
 
         # Re-validate after merge
-        for proposal in current_proposals:
-            proposal.edits = validate_edits(proposal.edits, file_contents)
+        current_proposals = [
+            dataclasses.replace(p, edits=validate_edits(p.edits, file_contents))
+            for p in current_proposals
+        ]
 
     # 7. Use the best proposals if consensus wasn't reached
     if not consensus:
