@@ -158,6 +158,24 @@ def _create_backend(config):
     raise ValueError(f"Unknown backend: {config.general.backend}")
 
 
+def _apply_command_overrides(config, cmd_config):
+    """Apply per-command agent filtering and consensus_threshold to config."""
+    if cmd_config.agents or cmd_config.consensus_threshold is not None:
+        agents = (
+            {k: v for k, v in config.agents.items() if k in cmd_config.agents}
+            if cmd_config.agents else config.agents
+        )
+        threshold = cmd_config.consensus_threshold or config.general.consensus_threshold
+        threshold = min(threshold, len(agents))
+        config = dataclasses.replace(
+            config,
+            agents=agents,
+            general=dataclasses.replace(config.general, consensus_threshold=threshold),
+        )
+        init_agent_styles(config.agents)
+    return config
+
+
 def _make_phase_handler():
     """Create a callback that prints phase results as they complete."""
     from multi_agent.models import (
@@ -340,20 +358,7 @@ def _review_common(
 
     command_prompt = cmd_config.prompt
 
-    # Apply per-command agent filtering and consensus_threshold.
-    if cmd_config.agents or cmd_config.consensus_threshold is not None:
-        agents = (
-            {k: v for k, v in config.agents.items() if k in cmd_config.agents}
-            if cmd_config.agents else config.agents
-        )
-        threshold = cmd_config.consensus_threshold or config.general.consensus_threshold
-        threshold = min(threshold, len(agents))
-        config = dataclasses.replace(
-            config,
-            agents=agents,
-            general=dataclasses.replace(config.general, consensus_threshold=threshold),
-        )
-        init_agent_styles(config.agents)
+    config = _apply_command_overrides(config, cmd_config)
 
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
@@ -487,6 +492,7 @@ def _run_ask(
     if cmd_config is None:
         from multi_agent.config import DEFAULT_ASK_COMMAND
         cmd_config = DEFAULT_ASK_COMMAND
+    config = _apply_command_overrides(config, cmd_config)
     prompt_text = command_prompt or cmd_config.prompt
 
     question_name = ".multi_agent_ask_question.md"
