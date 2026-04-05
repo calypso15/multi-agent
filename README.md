@@ -1,6 +1,6 @@
 # Multi-Agent Review
 
-A consensus-based review system where multiple specialized AI agents propose changes to your content, review each other's proposals, and iterate until they reach agreement — then present the final edits for your approval. Powered by the Claude Code CLI using your existing Claude Max subscription.
+A consensus-based multi-agent system where specialized AI agents collaborate via propose-review-iterate cycles until they reach agreement. Use it to review and edit content, or ask questions and get a single consensus answer. Powered by the Claude Code CLI using your existing Claude Max subscription.
 
 ## How It Works
 
@@ -68,6 +68,25 @@ python -m multi_agent --repo ~/git/my-project review --dry-run src/api.py
 # Review staged files (same as pre-commit hook)
 python -m multi_agent --repo ~/git/my-project review
 ```
+
+### Asking questions
+
+The `ask` command lets you pose a question and get a consensus answer from all agents. Each agent answers from their specialty perspective, then they review and iterate until they converge on a single answer.
+
+```bash
+# Ask a question (quoting optional)
+python -m multi_agent --repo ~/git/my-project ask "What are the main themes of this story?"
+python -m multi_agent --repo ~/git/my-project ask How should we handle the timeline inconsistency
+
+# Override max rounds
+python -m multi_agent --repo ~/git/my-project ask --max-rounds 5 "What if we changed the setting?"
+```
+
+The question and answer are saved to two files in your repo root that persist between runs:
+- `.multi_agent_ask_question.md` — the original question
+- `.multi_agent_ask_answer.md` — the consensus answer
+
+Both files are overwritten on the next `ask` invocation. Add them to `.gitignore`.
 
 ### Commands
 
@@ -214,7 +233,7 @@ agents = ["canon_continuity", "sociopolitical"]
 prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive."
 ```
 
-The `review` command has a built-in default and is always available even without a TOML file. All other commands must be defined in config.
+The `review` and `ask` commands have built-in defaults and are always available even without a TOML file. All other commands must be defined in config. You can override the default `ask` prompt in TOML under `[commands.ask]`.
 
 ### Example config
 
@@ -251,6 +270,7 @@ prompt = "Simplify complex passages while preserving technical accuracy."
 
 ```
 multi-agent [--repo PATH] review [FILES] [--task NAME] [--dry-run] [--max-rounds N] [--prompt TEXT]
+multi-agent [--repo PATH] ask QUESTION [--max-rounds N]
 multi-agent [--repo PATH] <command> FILES [--dry-run] [--max-rounds N] [--prompt TEXT]
 multi-agent [--repo PATH] install-hook
 multi-agent [--repo PATH] uninstall-hook
@@ -258,6 +278,7 @@ multi-agent [--repo PATH] check-config
 ```
 
 - `review` — review files on disk, or staged files when no FILES given
+- `ask` — pose a question and get a consensus answer from all agents
 - `<command>` — any command defined in `[commands]` (e.g. `expand`, `contract`); auto-generated from TOML
 - `--repo PATH` — target a different git repository (defaults to current directory)
 - `--config PATH` — use a specific config file

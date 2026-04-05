@@ -227,14 +227,20 @@ prompt = "Focus on deepening character voices, adding internal monologue, and ma
 agents = ["canon_continuity", "sociopolitical"]
 prompt = "Enrich world-building details: sensory descriptions, environmental atmosphere, cultural texture, and background activity that makes settings feel lived-in."
 
-# --- Ask Commands ---
-# The "ask" command lets you pose a question and get a consensus answer from
-# all agents. It works by writing the question to a temp file and running the
-# normal consensus loop — agents "answer" by editing the file.
+# --- Ask Command ---
+# The built-in "ask" command lets you pose a question and get a consensus
+# answer from all agents. It writes the question to two files in your repo:
+#   .multi_agent_ask_question.md  — the original question (preserved)
+#   .multi_agent_ask_answer.md    — the consensus answer (persists between runs)
+#
+# Agents "answer" by editing the answer file through the normal consensus
+# loop — propose, review, iterate, arbitrate — then the final merged result
+# is displayed and saved. Both files persist until the next "ask" invocation.
 #
 # Usage examples:
 #   multi-agent ask "What are the main themes of this story?"
 #   multi-agent ask How should we handle the timeline inconsistency in chapter 5
+#   multi-agent ask --max-rounds 5 "What if we changed the setting to Mars?"
 
 # Override the default ask prompt if desired:
 # [commands.ask]
