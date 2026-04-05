@@ -399,19 +399,25 @@ def print_edit_list(
     """
     console.print()
     for num, agent_display, edit in numbered_edits:
-        parts: list[str] = []
-        parts.append(
-            f"[bold]{num}.[/bold] [{edit.severity}] "
-            f"[dim]{edit.file}[/dim]  [dim]({agent_display})[/dim]"
+        header = Text.assemble(
+            (f"{num}. ", "bold"),
+            (f"[{edit.severity}] ", ""),
+            (edit.file, "dim"),
+            ("  ", ""),
+            (f"({agent_display})", "dim"),
         )
+        body = Text()
         if edit.rationale:
-            parts.append(f"[dim]Rationale:[/dim] {edit.rationale}")
-        parts.append(f"[dim]\u2500\u2500 original \u2500\u2500[/dim]")
-        parts.append(_truncate_text(edit.original_text))
-        parts.append(f"[dim]\u2500\u2500 replacement \u2500\u2500[/dim]")
-        parts.append(_truncate_text(edit.replacement_text))
+            body.append("Rationale: ", style="dim")
+            body.append(edit.rationale + "\n", style="cyan")
+        body.append("\u2500\u2500 original \u2500\u2500\n", style="red dim")
+        body.append(_truncate_text(edit.original_text) + "\n", style="red")
+        body.append("\u2500\u2500 replacement \u2500\u2500\n", style="green dim")
+        body.append(_truncate_text(edit.replacement_text), style="green")
         console.print(Panel(
-            "\n".join(parts),
+            body,
+            title=header,
+            title_align="left",
             border_style="dim",
             padding=(0, 2),
         ))
