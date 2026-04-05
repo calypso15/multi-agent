@@ -2,56 +2,45 @@
 # Copy this file to your repository as "multi_agent.toml" and
 # adjust the values to match your project structure.
 #
-# Agents are fully defined in this file. You can add, remove, or customize
-# any number of agents. Each agent needs at minimum:
+# Settings cascade: [general] → [agents.<name>] → [commands.<name>].
+# Define defaults at the top level and override per-agent or per-command.
+# If not set at any level, a reasonable default is used.
+#
+# Agents need at minimum:
 #   system_prompt = "..."   (required — the agent's specialty/focus)
 #   enabled = true          (optional, default true)
 #   display_name = "..."    (optional, defaults to titlecased key name)
 
 [general]
-# Glob patterns for files the agents should review
-file_patterns = ["*.md", "*.txt"]
+# --- Per-agent cascading defaults (overridable per-agent and per-command) ---
+# propose_model = "sonnet"        # Model for propose phase (default: backend default)
+# review_model = "haiku" # Model for review phase (default: falls back to propose_model)
+timeout_seconds = 600                         # Max time per agent
+file_patterns = ["*.md", "*.txt"]             # Glob patterns for files to review
+reference_directories = ["reference"]         # Directories with established reference files
+max_reference_size_kb = 500                   # Max total size of reference content
+# allowed_tools = []                          # Extra tools for agents (Read is always available)
+# propose_max_turns = 0                       # Max turns per agent in propose (0 = unlimited)
+# review_max_turns = 0                        # Max turns per agent in review (0 = unlimited)
 
-# Number of agents that must approve for consensus (out of enabled agents)
-consensus_threshold = 2
-
-# Maximum time (seconds) each agent is allowed to run
-timeout_seconds = 600
-
-# Directories containing established reference files used as review context.
-# Agents cross-reference new content against these files.
-reference_directories = ["reference"]
-
-# Maximum total size (KB) of reference content loaded into agent context
-max_reference_size_kb = 500
-
-# Maximum propose-review iteration rounds before presenting best result
-max_rounds = 3
-
-# Minimum severity for proposed edits: "critical", "major", "minor", or "suggestion"
-# Set to "major" to skip minor/stylistic nitpicks and focus on real issues
-min_severity = "minor"
-
-# Minimum severity for edits to block consensus: "critical", "major", "minor", or "suggestion"
-# Edits below this threshold are included but won't prevent consensus.
-# Must be at least as severe as min_severity.
-min_blocking_severity = "major"
-
-# Maximum turns per agent (0 = unlimited, let agent decide)
-# propose_max_turns = 0
-# review_max_turns = 0
+# --- Per-run cascading defaults (overridable per-command) ---
+consensus_threshold = 2                       # Approvals needed for consensus
+max_rounds = 3                                # Max propose-review iterations
+min_severity = "minor"                        # Minimum severity for proposed edits
+min_blocking_severity = "major"               # Minimum severity to block consensus
 
 
 # --- Agent Definitions ---
 # Each [agents.<name>] block defines one agent. The key name (e.g.
 # "scientific_rigor") is used internally; display_name controls what
 # appears in terminal output. system_prompt is the agent's specialty.
+# Any cascading setting can be overridden here.
 
 [agents.scientific_rigor]
 enabled = true
 display_name = "Scientific Rigor"
-propose_model = "claude-sonnet-4-6"
-review_model = "claude-haiku-4-5-20251001"
+propose_model = "sonnet"
+review_model = "haiku"
 # Tools available during the propose phase (e.g. web search for fact-checking)
 allowed_tools = ["WebSearch", "WebFetch"]
 system_prompt = """\
@@ -91,8 +80,8 @@ or if technology is implausible even by hard sci-fi standards.\
 [agents.canon_continuity]
 enabled = true
 display_name = "Canon Continuity"
-propose_model = "claude-sonnet-4-6"
-review_model = "claude-haiku-4-5-20251001"
+propose_model = "sonnet"
+review_model = "haiku"
 system_prompt = """\
 You are the Canon Continuity Reviewer for a hard science fiction universe set on Earth, \
 post-First Contact with an alien civilization.
@@ -132,8 +121,8 @@ submission is internally inconsistent.\
 [agents.sociopolitical]
 enabled = true
 display_name = "Sociopolitical"
-propose_model = "claude-sonnet-4-6"
-review_model = "claude-haiku-4-5-20251001"
+propose_model = "sonnet"
+review_model = "haiku"
 allowed_tools = ["WebSearch", "WebFetch"]
 system_prompt = """\
 You are the Sociopolitical Plausibility Reviewer for a hard science fiction universe \
@@ -197,36 +186,6 @@ Review the submitted content from your specialty perspective and propose \
 CONCRETE edits to improve it. Keep edits minimal — change only what is \
 necessary to fix the issue."""
 
-[commands.expand]
-description = "Expand files with richer detail via consensus"
-prompt = """\
-Your goal is to enrich the submitted content from your specialty perspective. \
-Add vivid descriptions, flesh out thin scenes, deepen character moments, and \
-develop world-building elements. Preserve the existing narrative arc and \
-voice. Propose concrete edits that ADD detail where the content would \
-benefit from it.
-
-Work section by section — propose one edit per paragraph or logical unit \
-rather than rewriting large blocks at once."""
-
-[commands.contract]
-description = "Tighten prose and cut filler via consensus"
-# Use a faster model for contraction — it's mostly deletions
-review_model = "claude-haiku-4-5-20251001"
-prompt = """\
-Your goal is to tighten the prose from your specialty perspective. Remove \
-redundant words and phrases, consolidate repetitive passages, cut filler, \
-and streamline sentences. Preserve all meaning and narrative beats with \
-fewer words. Propose concrete edits that make the writing more concise."""
-
-[commands.deepen-characters]
-prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive and memorable."
-
-[commands.worldbuild]
-# Only use canon_continuity and sociopolitical for world-building tasks
-agents = ["canon_continuity", "sociopolitical"]
-prompt = "Enrich world-building details: sensory descriptions, environmental atmosphere, cultural texture, and background activity that makes settings feel lived-in."
-
 # --- Ask Command ---
 # The built-in "ask" command lets you pose a question and get a consensus
 # answer from all agents. It writes the question to two files in your repo:
@@ -246,3 +205,25 @@ prompt = "Enrich world-building details: sensory descriptions, environmental atm
 # [commands.ask]
 # description = "Ask a question and get a consensus answer"
 # prompt = "Custom instructions for how agents should answer questions."
+
+[commands.expand]
+description = "Expand files with richer detail via consensus"
+prompt = """\
+Your goal is to enrich the submitted content from your specialty perspective. \
+Add vivid descriptions, flesh out thin scenes, deepen character moments, and \
+develop world-building elements. Preserve the existing narrative arc and \
+voice. Propose concrete edits that ADD detail where the content would \
+benefit from it.
+
+Work section by section — propose one edit per paragraph or logical unit \
+rather than rewriting large blocks at once."""
+
+[commands.contract]
+description = "Tighten prose and cut filler via consensus"
+# Use a faster model for contraction — it's mostly deletions
+review_model = "haiku"
+prompt = """\
+Your goal is to tighten the prose from your specialty perspective. Remove \
+redundant words and phrases, consolidate repetitive passages, cut filler, \
+and streamline sentences. Preserve all meaning and narrative beats with \
+fewer words. Propose concrete edits that make the writing more concise."""

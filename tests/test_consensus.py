@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from multi_agent.backend import AgentResult
-from multi_agent.config import AgentConfig, GeneralConfig, MultiAgentConfig
+from multi_agent.config import (
+    AgentConfig,
+    GeneralConfig,
+    MultiAgentConfig,
+    ResolvedAgentSettings,
+    ResolvedRunConfig,
+    resolve_run_config,
+)
 from multi_agent.consensus import (
     _build_arbitration_prompt,
     _build_dissent_prompt,
@@ -321,41 +328,39 @@ class TestRunSingleReviewer:
 
 
 def _make_config(agents=None):
-    """Build a MultiAgentConfig for testing."""
+    """Build a ResolvedRunConfig for testing."""
     if agents is None:
         agents = {
             "alpha": AgentConfig(system_prompt="Alpha."),
             "beta": AgentConfig(system_prompt="Beta."),
         }
-    return MultiAgentConfig(
-        general=GeneralConfig(),
-        agents=agents,
-    )
+    config = MultiAgentConfig(general=GeneralConfig(), agents=agents)
+    return resolve_run_config(config)
 
 
 class TestRunProposePhase:
-    async def test_calls_each_enabled_agent(self):
+    async def test_calls_each_enabled_agent(self, tmp_path):
         backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "Done.", "edits": []},
         ))
-        config = _make_config()
+        resolved = _make_config()
         proposals = await run_propose_phase(
-            config, {"f.md": "content"}, {}, None, "/repo", backend,
+            resolved, {"f.md": "content"}, {}, None, str(tmp_path), backend,
         )
         assert len(proposals) == 2
         assert backend.run_agent.call_count == 2
 
-    async def test_skips_disabled_agents(self):
+    async def test_skips_disabled_agents(self, tmp_path):
         backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "Done.", "edits": []},
         ))
-        config = _make_config({
+        resolved = _make_config({
             "alpha": AgentConfig(system_prompt="A."),
             "beta": AgentConfig(system_prompt="B.", enabled=False),
             "gamma": AgentConfig(system_prompt="G."),
         })
         proposals = await run_propose_phase(
-            config, {"f.md": "content"}, {}, None, "/repo", backend,
+            resolved, {"f.md": "content"}, {}, None, str(tmp_path), backend,
         )
         assert len(proposals) == 2
         names = [p.agent_name for p in proposals]
@@ -367,13 +372,13 @@ class TestRunReviewPhase:
         backend = _make_mock_backend(return_value=_make_agent_result(
             output={"all_approved": True, "summary": "OK", "proposal_reviews": []},
         ))
-        config = _make_config()
+        resolved = _make_config()
         proposals = [
             AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
             AgentProposal("beta", [FileEdit("f.md", "x", "y", "", "minor")], ""),
         ]
         reviews = await run_review_phase(
-            config, proposals, {"f.md": "old x"}, {}, "/repo", 0, backend,
+            resolved, proposals, {"f.md": "old x"}, {}, "/repo", 0, backend,
         )
         assert len(reviews) == 2
 
@@ -381,14 +386,14 @@ class TestRunReviewPhase:
         backend = _make_mock_backend(return_value=_make_agent_result(
             output={"all_approved": True, "summary": "OK", "proposal_reviews": []},
         ))
-        config = _make_config()
+        resolved = _make_config()
         # Only alpha has edits; beta has none
         proposals = [
             AgentProposal("alpha", [FileEdit("f.md", "old", "new", "", "minor")], ""),
             AgentProposal("beta", [], ""),
         ]
         reviews = await run_review_phase(
-            config, proposals, {"f.md": "old"}, {}, "/repo", 0, backend,
+            resolved, proposals, {"f.md": "old"}, {}, "/repo", 0, backend,
         )
         # Alpha reviews beta (no edits -> auto-approve), beta reviews alpha
         alpha_review = next(r for r in reviews if r.agent_name == "alpha")
@@ -401,10 +406,10 @@ class TestRunIterationLoop:
         backend = _make_mock_backend(return_value=_make_agent_result(
             output={"summary": "All good.", "edits": []},
         ))
-        config = _make_config()
+        resolved = _make_config()
         (tmp_path / "f.md").write_text("content")
         result = await run_iteration_loop(
-            config, str(tmp_path), backend, target_files=["f.md"],
+            resolved, str(tmp_path), backend, target_files=["f.md"],
         )
         assert result.consensus_reached is True
         assert result.final_edits == []
@@ -432,10 +437,10 @@ class TestRunIterationLoop:
             })
 
         backend = _make_mock_backend(side_effect=side_effect)
-        config = _make_config()
+        resolved = _make_config()
         (tmp_path / "f.md").write_text("old content here")
         result = await run_iteration_loop(
-            config, str(tmp_path), backend, target_files=["f.md"],
+            resolved, str(tmp_path), backend, target_files=["f.md"],
         )
         assert result.consensus_reached is True
         assert len(result.rounds) == 1

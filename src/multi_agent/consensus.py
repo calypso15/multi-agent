@@ -12,7 +12,11 @@ from multi_agent.agents import (
     build_name_normalizer,
 )
 from multi_agent.backend import AgentBackend
-from multi_agent.config import get_display_name, MultiAgentConfig
+from multi_agent.config import (
+    ResolvedRunConfig,
+    get_display_name,
+    MultiAgentConfig,
+)
 from multi_agent.context import (
     build_propose_prompt,
     build_review_round_prompt,
@@ -74,14 +78,14 @@ __all__ = [
 def resolve_file_args(
     file_paths: list[str],
     repo_root: Path,
-    config: MultiAgentConfig,
+    file_patterns: list[str],
 ) -> list[str]:
     """Resolve file arguments to relative paths, expanding directories."""
     resolved: list[Path] = []
     for fp in file_paths:
         abs_path = Path(fp) if Path(fp).is_absolute() else repo_root / fp
         if abs_path.is_dir():
-            for pattern in config.general.file_patterns:
+            for pattern in file_patterns:
                 resolved.extend(sorted(abs_path.rglob(pattern)))
         elif abs_path.is_file():
             resolved.append(abs_path)
@@ -90,7 +94,7 @@ def resolve_file_args(
 
     if not resolved:
         raise FileNotFoundError(
-            f"No files matching {config.general.file_patterns} found in: "
+            f"No files matching {file_patterns} found in: "
             + ", ".join(file_paths)
         )
 
@@ -348,45 +352,47 @@ async def _run_single_dissenter(
 
 
 async def run_propose_phase(
-    config: MultiAgentConfig,
+    resolved: ResolvedRunConfig,
     file_contents: dict[str, str],
     reference: dict[str, str],
     staged_diff: str | None,
     repo_root: str,
     backend: AgentBackend,
-    command_name: str | None = None,
-    command_prompt: str | None = None,
-    command_propose_model: str | None = None,
-    command_propose_instructions: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
     """Run all enabled agents in propose mode (sequentially)."""
-    propose_prompt = build_propose_prompt(
-        file_contents, reference, staged_diff,
-        min_severity=config.general.min_severity,
-        propose_instructions=command_propose_instructions,
-    )
-
     proposals: list[AgentProposal] = []
-    for name, agent_cfg in config.agents.items():
+    for name, agent_cfg in resolved.agents.items():
         if not agent_cfg.enabled:
             continue
+        settings = resolved.agent_settings[name]
+
+        # Per-agent reference loading
+        agent_ref = load_reference(
+            Path(repo_root),
+            settings.reference_directories,
+            settings.file_patterns,
+            settings.max_reference_size_kb,
+        )
+        # Merge with any pre-loaded reference (union)
+        merged_ref = {**reference, **agent_ref} if reference else agent_ref
+
+        propose_prompt = build_propose_prompt(
+            file_contents, merged_ref, staged_diff,
+            min_severity=resolved.min_severity,
+            propose_instructions=resolved.command_propose_instructions,
+        )
         system_prompt = build_agent_system_prompt(
             name, "command", agent_cfg.system_prompt,
-            command_name=command_name,
-            command_prompt=command_prompt,
+            command_name=resolved.command_name,
+            command_prompt=resolved.command_prompt,
         )
-        max_turns = (
-            agent_cfg.propose_max_turns
-            if agent_cfg.propose_max_turns is not None
-            else config.general.propose_max_turns
-        )
-        model = command_propose_model or agent_cfg.propose_model
         proposals.append(await _run_single_proposer(
             name, propose_prompt, backend, system_prompt, repo_root,
-            config.general.timeout_seconds, on_progress,
-            model=model, max_turns=max_turns,
-            allowed_tools=agent_cfg.allowed_tools or None,
+            settings.timeout_seconds, on_progress,
+            model=settings.propose_model,
+            max_turns=settings.propose_max_turns,
+            allowed_tools=settings.allowed_tools or None,
         ))
 
     return proposals
@@ -410,7 +416,7 @@ def _last_modifiers(
 
 
 async def run_review_phase(
-    config: MultiAgentConfig,
+    resolved: ResolvedRunConfig,
     proposals: list[AgentProposal],
     file_contents: dict[str, str],
     reference: dict[str, str],
@@ -421,7 +427,6 @@ async def run_review_phase(
     previous_reviews: list[AgentReviewResponse] | None = None,
     display_names: dict[str, str] | None = None,
     normalizer: Callable[[str], str] | None = None,
-    command_review_model: str | None = None,
 ) -> list[AgentReviewResponse]:
     """Run all enabled agents in review mode (sequentially).
 
@@ -436,9 +441,10 @@ async def run_review_phase(
     # indices and break merge_proposals).
     last_mods = _last_modifiers(previous_reviews) if previous_reviews else {}
 
-    for name, agent_cfg in config.agents.items():
+    for name, agent_cfg in resolved.agents.items():
         if not agent_cfg.enabled:
             continue
+        settings = resolved.agent_settings[name]
         other_proposals = [p for p in proposals if p.agent_name != name]
 
         # Build skip set: edits this agent last modified
@@ -470,17 +476,12 @@ async def run_review_phase(
         system_prompt = build_agent_system_prompt(
             name, "review", agent_cfg.system_prompt,
         )
-        model = command_review_model or agent_cfg.review_model or agent_cfg.propose_model
-        max_turns = (
-            agent_cfg.review_max_turns
-            if agent_cfg.review_max_turns is not None
-            else config.general.review_max_turns
-        )
         reviews.append(await _run_single_reviewer(
             name, review_prompt, backend, system_prompt, repo_root,
-            config.general.timeout_seconds, round_number, on_progress,
+            settings.timeout_seconds, round_number, on_progress,
             normalizer=normalizer,
-            model=model, max_turns=max_turns,
+            model=settings.review_model,
+            max_turns=settings.review_max_turns,
         ))
 
     return reviews
@@ -514,29 +515,28 @@ def _build_dissent_prompt(
 
 
 async def _collect_dissents(
-    config: MultiAgentConfig,
+    resolved: ResolvedRunConfig,
     dissenting_agents: list[str],
     proposals: list[AgentProposal],
     file_contents: dict[str, str],
     repo_root: str,
     backend: AgentBackend,
     on_progress: Callable[[str, str], None] | None = None,
-    command_review_model: str | None = None,
 ) -> list[Dissent]:
     """Collect brief dissenting opinions from agents that didn't approve."""
     prompt = _build_dissent_prompt(proposals, file_contents)
 
     dissents: list[Dissent] = []
     for name in dissenting_agents:
-        agent_cfg = config.agents.get(name)
+        agent_cfg = resolved.agents.get(name)
         if not agent_cfg or not agent_cfg.enabled:
             continue
+        settings = resolved.agent_settings[name]
         system_prompt = build_agent_system_prompt(name, "dissent", agent_cfg.system_prompt)
-        model = command_review_model or agent_cfg.review_model or agent_cfg.propose_model
         result = await _run_single_dissenter(
             name, prompt, backend, system_prompt, repo_root,
-            config.general.timeout_seconds, on_progress,
-            model=model,
+            settings.timeout_seconds, on_progress,
+            model=settings.review_model,
         )
         if result.opinion:
             dissents.append(result)
@@ -653,19 +653,21 @@ def _build_arbitration_prompt(
 async def _run_arbitration(
     contested_edits: list[ContestedEdit],
     file_contents: dict[str, str],
-    config: MultiAgentConfig,
+    resolved: ResolvedRunConfig,
     repo_root: str,
     backend: AgentBackend,
     on_progress: Callable[[str, str], None] | None = None,
-    command_review_model: str | None = None,
 ) -> list[ArbitrationResult]:
-    """Run arbitration on contested edits using the backend for proper error handling."""
-    model = command_review_model
-    if model is None:
-        for agent_cfg in config.agents.values():
-            if agent_cfg.enabled:
-                model = agent_cfg.review_model or agent_cfg.propose_model
-                break
+    """Run arbitration on contested edits using the backend."""
+    # Use the first agent's review model for arbitration
+    model = None
+    for settings in resolved.agent_settings.values():
+        model = settings.review_model or settings.propose_model
+        if model:
+            break
+
+    # Use the first agent's timeout
+    timeout = next(iter(resolved.agent_settings.values())).timeout_seconds
 
     results: list[ArbitrationResult] = []
     for i, contested in enumerate(contested_edits):
@@ -673,7 +675,7 @@ async def _run_arbitration(
         prompt = _build_arbitration_prompt(contested, file_contents)
         results.append(await _run_single_arbitrator(
             key, contested, prompt, backend, repo_root,
-            config.general.timeout_seconds, on_progress,
+            timeout, on_progress,
             model=model,
         ))
 
@@ -722,37 +724,33 @@ async def _run_single_arbitrator(
 
 
 async def run_iteration_loop(
-    config: MultiAgentConfig,
+    resolved: ResolvedRunConfig,
     repo_root: str,
     backend: AgentBackend,
     target_files: list[str] | None = None,
-    command_name: str | None = None,
-    command_prompt: str | None = None,
-    command_propose_model: str | None = None,
-    command_review_model: str | None = None,
-    command_propose_instructions: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
     on_phase: Callable[[PhaseEvent], None] | None = None,
 ) -> IterationResult:
     """Run the full propose-review-iterate loop.
 
+    resolved: fully resolved config (cascading already applied).
     If target_files is None, reviews staged files. Otherwise reviews the
     specified files from the working tree.
-    backend: the AgentBackend to use for running agents.
-    command_name/command_prompt: the TOML command driving this run.
-    command_propose_model/command_review_model: per-command model overrides.
-    on_phase: callback for typed phase events (ProposeDone, ReviewDone, etc.).
     """
     root = Path(repo_root)
     start = time.monotonic()
 
-    normalizer = build_name_normalizer(config.agents)
-    display_names = {k: get_display_name(k, v) for k, v in config.agents.items()}
+    normalizer = build_name_normalizer(resolved.agents)
+    display_names = {k: get_display_name(k, v) for k, v in resolved.agents.items()}
+
+    # Use the first agent's file_patterns for staged file resolution
+    # (all agents see the same target files; per-agent patterns affect references)
+    first_settings = next(iter(resolved.agent_settings.values()))
 
     # 1. Load file contents
     staged_diff: str | None = None
     if target_files is None:
-        staged_files = get_staged_files(root, config.general.file_patterns)
+        staged_files = get_staged_files(root, first_settings.file_patterns)
         if not staged_files:
             return IterationResult(
                 consensus_reached=True,
@@ -765,7 +763,7 @@ async def run_iteration_loop(
         file_contents = {}
         for f in staged_files:
             file_contents[str(f)] = get_staged_content(root, f)
-        staged_diff = get_staged_diff(root, config.general.file_patterns)
+        staged_diff = get_staged_diff(root, first_settings.file_patterns)
         files_reviewed = [str(f) for f in staged_files]
     else:
         file_contents = {}
@@ -773,22 +771,14 @@ async def run_iteration_loop(
             file_contents[f] = (root / f).read_text()
         files_reviewed = list(target_files)
 
-    # 2. Load reference files
-    reference = load_reference(
-        root,
-        config.general.reference_directories,
-        config.general.file_patterns,
-        config.general.max_reference_size_kb,
-    )
+    # 2. Load base reference files (per-agent loading happens in run_propose_phase)
+    reference: dict[str, str] = {}
 
     # 3. Propose phase
     total_usage = TokenUsage()
 
     proposals = await run_propose_phase(
-        config, file_contents, reference, staged_diff, repo_root, backend,
-        command_name=command_name, command_prompt=command_prompt,
-        command_propose_model=command_propose_model,
-        command_propose_instructions=command_propose_instructions,
+        resolved, file_contents, reference, staged_diff, repo_root, backend,
         on_progress=on_progress,
     )
     for p in proposals:
@@ -801,7 +791,7 @@ async def run_iteration_loop(
     for proposal in proposals:
         proposal.edits = validate_edits(proposal.edits, file_contents)
         proposal.edits = filter_edits_by_severity(
-            proposal.edits, config.general.min_severity,
+            proposal.edits, resolved.min_severity,
         )
 
     all_edits = []
@@ -830,6 +820,16 @@ async def run_iteration_loop(
             total_usage=total_usage,
         )
 
+    # Build a merged reference for review rounds (union of all agents' references)
+    review_reference: dict[str, str] = {}
+    for name in resolved.agent_settings:
+        settings = resolved.agent_settings[name]
+        ref = load_reference(
+            root, settings.reference_directories,
+            settings.file_patterns, settings.max_reference_size_kb,
+        )
+        review_reference.update(ref)
+
     # 6. Review-iterate loop
     rounds: list[IterationRound] = []
     current_proposals = proposals
@@ -846,23 +846,22 @@ async def run_iteration_loop(
 
     previous_reviews: list[AgentReviewResponse] | None = None
 
-    for round_num in range(config.general.max_rounds):
+    for round_num in range(resolved.max_rounds):
         reviews = await run_review_phase(
-            config, current_proposals, file_contents, reference,
+            resolved, current_proposals, file_contents, review_reference,
             repo_root, round_num, backend, on_progress,
             previous_reviews=previous_reviews,
             display_names=display_names,
             normalizer=normalizer,
-            command_review_model=command_review_model,
         )
         for r in reviews:
             total_usage += r.usage
 
         approvals = count_blocking_approvals(
             reviews, current_proposals,
-            config.general.min_blocking_severity,
+            resolved.min_blocking_severity,
         )
-        consensus_reached = approvals >= config.general.consensus_threshold
+        consensus_reached = approvals >= resolved.consensus_threshold
 
         rounds.append(IterationRound(
             round_number=round_num,
@@ -875,7 +874,7 @@ async def run_iteration_loop(
             on_phase(ReviewDone(
                 round_number=round_num,
                 reviews=reviews,
-                consensus_threshold=config.general.consensus_threshold,
+                consensus_threshold=resolved.consensus_threshold,
                 blocking_approvals=approvals,
             ))
 
@@ -903,9 +902,8 @@ async def run_iteration_loop(
                     on_phase(ArbitrationStart(contested=contested))
 
                 arb_results = await _run_arbitration(
-                    contested, file_contents, config, repo_root, backend,
+                    contested, file_contents, resolved, repo_root, backend,
                     on_progress,
-                    command_review_model=command_review_model,
                 )
                 for ar in arb_results:
                     total_usage += ar.usage
@@ -1060,8 +1058,8 @@ async def run_iteration_loop(
                         break
 
             arb_results = await _run_arbitration(
-                contested, file_contents, config, repo_root, backend,
-                on_progress, command_review_model=command_review_model,
+                contested, file_contents, resolved, repo_root, backend,
+                on_progress,
             )
             for ar, winner_text in zip(arb_results, winner_texts):
                 total_usage += ar.usage
@@ -1102,7 +1100,7 @@ async def run_iteration_loop(
                     break
                 if is_blocking_severity(
                     prop.edits[pr.edit_index].severity,
-                    config.general.min_blocking_severity,
+                    resolved.min_blocking_severity,
                 ):
                     has_blocking_objection = True
                     break
@@ -1110,9 +1108,8 @@ async def run_iteration_loop(
                 dissenting_agents.append(r.agent_name)
         if dissenting_agents:
             dissents = await _collect_dissents(
-                config, dissenting_agents, current_proposals,
+                resolved, dissenting_agents, current_proposals,
                 file_contents, repo_root, backend, on_progress,
-                command_review_model=command_review_model,
             )
             for d in dissents:
                 total_usage += d.usage

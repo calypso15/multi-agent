@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from multi_agent.config import CommandConfig, load_config
+from multi_agent.config import CommandConfig, load_config, resolve_run_config
 from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
@@ -148,32 +148,14 @@ def _resolve_task(
     )
 
 
-def _create_backend(config):
-    """Create the agent backend from config."""
+def _create_backend(resolved):
+    """Create the agent backend from resolved config."""
     from multi_agent.backend import AgentBackend  # noqa: F401
 
-    if config.general.backend == "claude-cli":
+    if resolved.backend == "claude-cli":
         from multi_agent.claude_runner import ClaudeCliBackend
         return ClaudeCliBackend()
-    raise ValueError(f"Unknown backend: {config.general.backend}")
-
-
-def _apply_command_overrides(config, cmd_config):
-    """Apply per-command agent filtering and consensus_threshold to config."""
-    if cmd_config.agents or cmd_config.consensus_threshold is not None:
-        agents = (
-            {k: v for k, v in config.agents.items() if k in cmd_config.agents}
-            if cmd_config.agents else config.agents
-        )
-        threshold = cmd_config.consensus_threshold or config.general.consensus_threshold
-        threshold = min(threshold, len(agents))
-        config = dataclasses.replace(
-            config,
-            agents=agents,
-            general=dataclasses.replace(config.general, consensus_threshold=threshold),
-        )
-        init_agent_styles(config.agents)
-    return config
+    raise ValueError(f"Unknown backend: {resolved.backend}")
 
 
 def _make_phase_handler():
@@ -206,7 +188,7 @@ def _make_phase_handler():
 
 
 def _run_iteration_and_present(
-    config,
+    resolved,
     repo_root: Path,
     target_files: list[str] | None,
     files_display: list[str],
@@ -215,29 +197,20 @@ def _run_iteration_and_present(
     uncommitted_ref: int,
     dry_run: bool,
     hook_mode: bool,
-    command_name: str | None = None,
-    command_prompt: str | None = None,
-    command_propose_model: str | None = None,
-    command_review_model: str | None = None,
-    command_propose_instructions: str | None = None,
     task_label: str | None = None,
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
     from multi_agent.consensus import run_iteration_loop
     from multi_agent.context import apply_merged_texts, build_diff_preview_from_merged
 
-    backend = _create_backend(config)
+    backend = _create_backend(resolved)
     on_phase = _make_phase_handler()
 
-    display_task = task_label or command_name
+    display_task = task_label or resolved.command_name
     print_header(files_display, ref_count, ref_size_kb, uncommitted_ref, task=display_task)
 
     result = asyncio.run(run_iteration_loop(
-        config, str(repo_root), backend, target_files=target_files,
-        command_name=command_name, command_prompt=command_prompt,
-        command_propose_model=command_propose_model,
-        command_review_model=command_review_model,
-        command_propose_instructions=command_propose_instructions,
+        resolved, str(repo_root), backend, target_files=target_files,
         on_progress=print_progress,
         on_phase=on_phase,
     ))
@@ -268,7 +241,7 @@ def _run_iteration_and_present(
         total = len(result.rounds[-1].reviews) if result.rounds else 0
         print_iteration_exhausted(
             rounds_run=len(result.rounds),
-            max_rounds=config.general.max_rounds,
+            max_rounds=resolved.max_rounds,
             approvals=result.best_approvals,
             total=total,
             best_round=result.best_round,
@@ -316,11 +289,10 @@ def _prepare_command(
     task_name: str | None = None,
     prompt: str | None = None,
 ):
-    """Load config, resolve command, and apply overrides.
+    """Load config, resolve command, and build ResolvedRunConfig.
 
-    Returns (config, repo_root, cmd_name, cmd_config) with agent filtering
-    and consensus_threshold already applied.  Every CLI command flows through
-    here so new commands inherit shared behaviour automatically.
+    Returns (resolved, repo_root).  Every CLI command flows through here
+    so new commands inherit shared behaviour automatically.
     """
     try:
         repo_root = _resolve_repo(ctx)
@@ -332,7 +304,6 @@ def _prepare_command(
         Path(config_path) if config_path else None,
         search_from=repo_root,
     )
-    init_agent_styles(config.agents)
     if max_rounds is not None:
         config = dataclasses.replace(
             config,
@@ -356,8 +327,9 @@ def _prepare_command(
                 prompt=f"{cmd_config.prompt}\n\nAdditional instructions: {prompt}",
             )
 
-    config = _apply_command_overrides(config, cmd_config)
-    return config, repo_root, cmd_name, cmd_config
+    resolved = resolve_run_config(config, cmd_name, cmd_config)
+    init_agent_styles(resolved.agents)
+    return resolved, repo_root
 
 
 def _review_common(
@@ -371,11 +343,10 @@ def _review_common(
     prompt: str | None = None,
 ) -> None:
     """Shared implementation for review and TOML-defined commands."""
-    config, repo_root, cmd_name, cmd_config = _prepare_command(
+    resolved, repo_root = _prepare_command(
         ctx, config_path, max_rounds, "review",
         task_name=task_name, prompt=prompt,
     )
-    task_label = cmd_name
 
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
@@ -384,17 +355,22 @@ def _review_common(
         load_reference,
     )
 
+    # Use the first agent's file_patterns for file resolution
+    first_settings = next(iter(resolved.agent_settings.values()))
+
     # If files provided, review those files. Otherwise review staged files.
     if files:
         try:
-            resolved = resolve_file_args(list(files), repo_root, config)
+            file_list = resolve_file_args(
+                list(files), repo_root, first_settings.file_patterns,
+            )
         except FileNotFoundError as exc:
             print_error(str(exc))
             sys.exit(1)
-        target_files: list[str] | None = resolved
-        files_display = resolved
+        target_files: list[str] | None = file_list
+        files_display = file_list
     else:
-        staged = get_staged_files(repo_root, config.general.file_patterns)
+        staged = get_staged_files(repo_root, first_settings.file_patterns)
         if not staged:
             print_no_files()
             sys.exit(0)
@@ -403,20 +379,20 @@ def _review_common(
 
     ref = load_reference(
         repo_root,
-        config.general.reference_directories,
-        config.general.file_patterns,
-        config.general.max_reference_size_kb,
+        first_settings.reference_directories,
+        first_settings.file_patterns,
+        first_settings.max_reference_size_kb,
     )
     ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
     uncommitted = count_uncommitted_reference(
         repo_root,
-        config.general.reference_directories,
-        config.general.file_patterns,
+        first_settings.reference_directories,
+        first_settings.file_patterns,
         set(ref.keys()),
     )
 
     exit_code = _run_iteration_and_present(
-        config=config,
+        resolved=resolved,
         repo_root=repo_root,
         target_files=target_files,
         files_display=files_display,
@@ -425,12 +401,7 @@ def _review_common(
         uncommitted_ref=uncommitted,
         dry_run=dry_run,
         hook_mode=hook_mode,
-        command_name=cmd_name,
-        command_prompt=command_prompt,
-        command_propose_model=cmd_config.propose_model,
-        command_review_model=cmd_config.review_model,
-        command_propose_instructions=cmd_config.propose_instructions,
-        task_label=task_label,
+        task_label=resolved.command_name,
     )
     sys.exit(exit_code)
 
@@ -476,31 +447,31 @@ def review(
 
 
 def _run_ask(
-    config,
+    resolved,
     repo_root: Path,
     question: str,
-    cmd_name: str,
-    cmd_config: CommandConfig,
 ) -> int:
     """Write question to two files, run consensus on the answer file, persist both."""
     from multi_agent.consensus import run_iteration_loop
     from multi_agent.context import load_reference, count_uncommitted_reference
 
+    first_settings = next(iter(resolved.agent_settings.values()))
+
     ref = load_reference(
         repo_root,
-        config.general.reference_directories,
-        config.general.file_patterns,
-        config.general.max_reference_size_kb,
+        first_settings.reference_directories,
+        first_settings.file_patterns,
+        first_settings.max_reference_size_kb,
     )
     ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
     uncommitted = count_uncommitted_reference(
         repo_root,
-        config.general.reference_directories,
-        config.general.file_patterns,
+        first_settings.reference_directories,
+        first_settings.file_patterns,
         set(ref.keys()),
     )
 
-    backend = _create_backend(config)
+    backend = _create_backend(resolved)
     on_phase = _make_phase_handler()
 
     question_name = ".multi_agent_ask_question.md"
@@ -513,17 +484,12 @@ def _run_ask(
     answer_path.write_text(question)
 
     print_header(
-        [answer_name], len(ref), ref_size_kb, uncommitted, task=cmd_name,
+        [answer_name], len(ref), ref_size_kb, uncommitted, task=resolved.command_name,
     )
 
     result = asyncio.run(run_iteration_loop(
-        config, str(repo_root), backend,
+        resolved, str(repo_root), backend,
         target_files=[answer_name],
-        command_name=cmd_name,
-        command_prompt=cmd_config.prompt,
-        command_propose_model=cmd_config.propose_model,
-        command_review_model=cmd_config.review_model,
-        command_propose_instructions=cmd_config.propose_instructions,
         on_progress=print_progress,
         on_phase=on_phase,
     ))
@@ -549,7 +515,7 @@ def _run_ask(
         total = len(result.rounds[-1].reviews) if result.rounds else 0
         print_iteration_exhausted(
             rounds_run=len(result.rounds),
-            max_rounds=config.general.max_rounds,
+            max_rounds=resolved.max_rounds,
             approvals=result.best_approvals,
             total=total,
             best_round=result.best_round,
@@ -586,11 +552,9 @@ def ask(
     if not question_text.strip():
         raise click.BadParameter("Question cannot be empty.", param_hint="'QUESTION'")
 
-    config, repo_root, cmd_name, cmd_config = _prepare_command(
-        ctx, config_path, max_rounds, "ask",
-    )
+    resolved, repo_root = _prepare_command(ctx, config_path, max_rounds, "ask")
 
-    exit_code = _run_ask(config, repo_root, question_text, cmd_name, cmd_config)
+    exit_code = _run_ask(resolved, repo_root, question_text)
     sys.exit(exit_code)
 
 
@@ -648,36 +612,83 @@ def check_config(ctx: click.Context, config_path: str | None) -> None:
 
     from multi_agent.config import get_display_name
 
-    console.print("[bold]Configuration:[/bold]")
-    console.print(f"  File patterns: {config.general.file_patterns}")
-    console.print(f"  Consensus threshold: {config.general.consensus_threshold}")
-    console.print(f"  Timeout: {config.general.timeout_seconds}s")
-    console.print(f"  Max rounds: {config.general.max_rounds}")
-    console.print(f"  Min severity: {config.general.min_severity}")
-    console.print(f"  Min blocking severity: {config.general.min_blocking_severity}")
-    console.print(f"  Propose max turns: {config.general.propose_max_turns}")
-    console.print(f"  Review max turns: {config.general.review_max_turns}")
-    console.print(f"  Reference directories: {config.general.reference_directories}")
+    # Show global defaults
+    g = config.general
+    console.print("[bold]Global Defaults:[/bold]")
+    console.print(f"  propose_model: {g.propose_model or '[dim]backend default[/dim]'}")
+    console.print(f"  review_model: {g.review_model or '[dim]falls back to propose_model[/dim]'}")
+    console.print(f"  timeout_seconds: {g.timeout_seconds}")
+    console.print(f"  file_patterns: {g.file_patterns}")
+    console.print(f"  reference_directories: {g.reference_directories}")
+    console.print(f"  max_reference_size_kb: {g.max_reference_size_kb}")
+    console.print(f"  allowed_tools: {g.allowed_tools or '[dim]none[/dim]'}")
+    console.print(f"  propose_max_turns: {g.propose_max_turns}")
+    console.print(f"  review_max_turns: {g.review_max_turns}")
+    console.print(f"  consensus_threshold: {g.consensus_threshold}")
+    console.print(f"  max_rounds: {g.max_rounds}")
+    console.print(f"  min_severity: {g.min_severity}")
+    console.print(f"  min_blocking_severity: {g.min_blocking_severity}")
+
+    # Show agents
     console.print()
     console.print("[bold]Agents:[/bold]")
     for name, agent in config.agents.items():
         display = get_display_name(name, agent)
         status = "[green]enabled[/green]" if agent.enabled else "[red]disabled[/red]"
-        model = agent.propose_model or "default"
-        review_model = agent.review_model or model
-        tools = ", ".join(agent.allowed_tools) if agent.allowed_tools else "none"
         has_prompt = "yes" if agent.system_prompt else "[red]missing[/red]"
-        console.print(
-            f"  {display} ({name}): {status} "
-            f"(propose: {model}, review: {review_model}, "
-            f"tools: {tools}, prompt: {has_prompt})"
-        )
+        console.print(f"  [bold]{display}[/bold] ({name}): {status}, prompt: {has_prompt}")
+        # Show overrides only (fields that differ from None/inherit)
+        overrides = []
+        if agent.propose_model is not None:
+            overrides.append(f"propose_model={agent.propose_model}")
+        if agent.review_model is not None:
+            overrides.append(f"review_model={agent.review_model}")
+        if agent.timeout_seconds is not None:
+            overrides.append(f"timeout_seconds={agent.timeout_seconds}")
+        if agent.allowed_tools is not None:
+            overrides.append(f"allowed_tools={agent.allowed_tools}")
+        if agent.file_patterns is not None:
+            overrides.append(f"file_patterns={agent.file_patterns}")
+        if agent.reference_directories is not None:
+            overrides.append(f"reference_directories={agent.reference_directories}")
+        if agent.max_reference_size_kb is not None:
+            overrides.append(f"max_reference_size_kb={agent.max_reference_size_kb}")
+        if agent.propose_max_turns is not None:
+            overrides.append(f"propose_max_turns={agent.propose_max_turns}")
+        if agent.review_max_turns is not None:
+            overrides.append(f"review_max_turns={agent.review_max_turns}")
+        if overrides:
+            console.print(f"    overrides: {', '.join(overrides)}")
 
+    # Show commands with resolved settings per agent
     if config.commands:
         console.print()
         console.print("[bold]Commands:[/bold]")
-        for name, cmd_cfg in config.commands.items():
+        for cmd_name, cmd_cfg in config.commands.items():
             desc = cmd_cfg.description
             if not desc:
                 desc = cmd_cfg.prompt[:60] + "..." if len(cmd_cfg.prompt) > 60 else cmd_cfg.prompt
-            console.print(f"  {name}: {desc}")
+            console.print(f"  [bold]{cmd_name}[/bold]: {desc}")
+
+            try:
+                resolved = resolve_run_config(config, cmd_name, cmd_cfg)
+            except ValueError as exc:
+                console.print(f"    [red]Error resolving: {exc}[/red]")
+                continue
+
+            console.print(
+                f"    max_rounds={resolved.max_rounds}, "
+                f"consensus_threshold={resolved.consensus_threshold}, "
+                f"min_severity={resolved.min_severity}, "
+                f"min_blocking_severity={resolved.min_blocking_severity}"
+            )
+            for agent_name, settings in resolved.agent_settings.items():
+                display = get_display_name(agent_name, config.agents[agent_name])
+                propose = settings.propose_model or "default"
+                review = settings.review_model or "default"
+                tools = ", ".join(settings.allowed_tools) if settings.allowed_tools else "none"
+                console.print(
+                    f"    {display}: "
+                    f"propose={propose}, review={review}, "
+                    f"timeout={settings.timeout_seconds}s, tools=[{tools}]"
+                )

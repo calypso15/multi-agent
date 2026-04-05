@@ -7,6 +7,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 def _field_names(cls: type) -> set[str]:
@@ -14,16 +15,26 @@ def _field_names(cls: type) -> set[str]:
     return {f.name for f in dataclasses.fields(cls)}
 
 
+# ---------------------------------------------------------------------------
+# Raw config dataclasses (loaded from TOML)
+# ---------------------------------------------------------------------------
+
 @dataclass
 class AgentConfig:
+    # Agent-only
     system_prompt: str | None = None
     display_name: str | None = None
     enabled: bool = True
+    # Per-agent cascading (None = inherit from general)
     propose_model: str | None = None
     review_model: str | None = None
-    allowed_tools: list[str] = field(default_factory=list)
     propose_max_turns: int | None = None
     review_max_turns: int | None = None
+    timeout_seconds: int | None = None
+    allowed_tools: list[str] | None = None
+    file_patterns: list[str] | None = None
+    reference_directories: list[str] | None = None
+    max_reference_size_kb: int | None = None
 
 
 def get_display_name(agent_key: str, agent_cfg: AgentConfig) -> str:
@@ -36,28 +47,47 @@ KNOWN_BACKENDS = {"claude-cli"}
 
 @dataclass
 class GeneralConfig:
+    # Global-only
     backend: str = "claude-cli"
-    file_patterns: list[str] = field(default_factory=lambda: ["*.md", "*.txt"])
-    consensus_threshold: int = 2
+    # Per-agent cascading defaults
+    propose_model: str | None = None   # None = backend default
+    review_model: str | None = None
+    propose_max_turns: int = 0  # 0 = unlimited (no --max-turns flag)
+    review_max_turns: int = 0
     timeout_seconds: int = 600
+    allowed_tools: list[str] = field(default_factory=list)
+    file_patterns: list[str] = field(default_factory=lambda: ["*.md", "*.txt"])
     reference_directories: list[str] = field(default_factory=lambda: ["reference"])
     max_reference_size_kb: int = 500
+    # Per-run cascading defaults
+    consensus_threshold: int = 2
     max_rounds: int = 3
     min_severity: str = "minor"
     min_blocking_severity: str = "major"
-    propose_max_turns: int = 0  # 0 = unlimited (no --max-turns flag)
-    review_max_turns: int = 0
 
 
 @dataclass
 class CommandConfig:
+    # Command-only
     prompt: str = ""
     description: str = ""
     agents: list[str] = field(default_factory=list)
-    consensus_threshold: int | None = None
+    propose_instructions: str | None = None
+    # Per-agent cascading (None = inherit)
     propose_model: str | None = None
     review_model: str | None = None
-    propose_instructions: str | None = None
+    propose_max_turns: int | None = None
+    review_max_turns: int | None = None
+    timeout_seconds: int | None = None
+    allowed_tools: list[str] | None = None
+    file_patterns: list[str] | None = None
+    reference_directories: list[str] | None = None
+    max_reference_size_kb: int | None = None
+    # Per-run cascading (None = inherit)
+    consensus_threshold: int | None = None
+    max_rounds: int | None = None
+    min_severity: str | None = None
+    min_blocking_severity: str | None = None
 
 
 # Default review command, used when absent from TOML.
@@ -103,6 +133,50 @@ class MultiAgentConfig:
     commands: dict[str, CommandConfig] = field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Resolved config dataclasses (fully resolved, no None for non-model fields)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ResolvedAgentSettings:
+    """Fully resolved settings for one agent in the context of one command."""
+    propose_model: str | None      # None = backend default
+    review_model: str | None       # None = backend default
+    propose_max_turns: int
+    review_max_turns: int
+    timeout_seconds: int
+    allowed_tools: list[str]
+    file_patterns: list[str]
+    reference_directories: list[str]
+    max_reference_size_kb: int
+
+
+@dataclass(frozen=True)
+class ResolvedRunConfig:
+    """Everything needed for one run, fully resolved.
+
+    Built once in cli.py, threaded through consensus.py.
+    Replaces the (config, command_*) parameter bundle.
+    """
+    # Per-agent resolved settings
+    agent_settings: dict[str, ResolvedAgentSettings]
+    # Per-run resolved settings
+    max_rounds: int
+    min_severity: str
+    min_blocking_severity: str
+    consensus_threshold: int
+    # Passthrough (level-specific, no cascade)
+    agents: dict[str, AgentConfig]
+    backend: str
+    command_name: str | None
+    command_prompt: str | None
+    command_propose_instructions: str | None
+
+
+# ---------------------------------------------------------------------------
+# Config file loading
+# ---------------------------------------------------------------------------
+
 def _find_config_file(start: Path) -> Path | None:
     """Walk up from start to find multi_agent.toml."""
     current = start.resolve()
@@ -131,10 +205,7 @@ def load_config(
 
     if path is None:
         config = MultiAgentConfig()
-        if "review" not in config.commands:
-            config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
-        if "ask" not in config.commands:
-            config.commands["ask"] = dataclasses.replace(DEFAULT_ASK_COMMAND)
+        _insert_builtin_commands(config)
         return config
 
     with open(path, "rb") as f:
@@ -195,15 +266,7 @@ def load_config(
                 **{k: v for k, v in cmd_raw.items() if k in valid}
             )
 
-    from multi_agent.claude_runner import KNOWN_TOOLS
-
-    for name, agent_cfg in config.agents.items():
-        invalid = set(agent_cfg.allowed_tools) - KNOWN_TOOLS
-        if invalid:
-            raise ValueError(
-                f"Unknown tool(s) in [agents.{name}].allowed_tools: "
-                f"{', '.join(sorted(invalid))}"
-            )
+    # --- Structural validation (raw config) ---
 
     for name, agent_cfg in config.agents.items():
         if agent_cfg.enabled and not agent_cfg.system_prompt:
@@ -217,60 +280,16 @@ def load_config(
             )
 
     enabled_count = sum(1 for a in config.agents.values() if a.enabled)
-    if config.general.consensus_threshold > enabled_count:
-        raise ValueError(
-            f"consensus_threshold ({config.general.consensus_threshold}) "
-            f"exceeds enabled agent count ({enabled_count})"
-        )
     if enabled_count < 2:
         raise ValueError("At least 2 agents must be enabled")
-    if config.general.max_rounds < 1:
-        raise ValueError("max_rounds must be at least 1")
-    valid_severities = ("critical", "major", "minor", "suggestion")
-    if config.general.min_severity not in valid_severities:
-        raise ValueError(
-            f"min_severity must be one of {valid_severities}, "
-            f"got '{config.general.min_severity}'"
-        )
-    if config.general.min_blocking_severity not in valid_severities:
-        raise ValueError(
-            f"min_blocking_severity must be one of {valid_severities}, "
-            f"got '{config.general.min_blocking_severity}'"
-        )
-    from multi_agent.models import severity_index
-    if severity_index(config.general.min_blocking_severity) > severity_index(
-        config.general.min_severity,
-    ):
-        raise ValueError(
-            f"min_blocking_severity ('{config.general.min_blocking_severity}') "
-            f"cannot be less severe than min_severity "
-            f"('{config.general.min_severity}')"
-        )
+
     if config.general.backend not in KNOWN_BACKENDS:
         raise ValueError(
             f"backend must be one of {sorted(KNOWN_BACKENDS)}, "
             f"got '{config.general.backend}'"
         )
 
-    # Insert default commands if missing; merge TOML overrides on top of
-    # defaults for built-in commands so users only need to specify the fields
-    # they want to change.
-    for builtin_name, builtin_default in (
-        ("review", DEFAULT_REVIEW_COMMAND),
-        ("ask", DEFAULT_ASK_COMMAND),
-    ):
-        if builtin_name not in config.commands:
-            config.commands[builtin_name] = dataclasses.replace(builtin_default)
-        else:
-            merged = dataclasses.replace(builtin_default)
-            for fld in dataclasses.fields(CommandConfig):
-                val = getattr(config.commands[builtin_name], fld.name)
-                if val != fld.default and val != (
-                    fld.default_factory() if fld.default_factory is not dataclasses.MISSING  # type: ignore[comparison-overlap]
-                    else fld.default
-                ):
-                    setattr(merged, fld.name, val)
-            config.commands[builtin_name] = merged
+    _insert_builtin_commands(config)
 
     enabled_agents = {k for k, v in config.agents.items() if v.enabled}
     for name, cmd_cfg in config.commands.items():
@@ -291,13 +310,168 @@ def load_config(
                     f"Command '{name}' references disabled agent(s): "
                     f"{', '.join(sorted(disabled))}"
                 )
-        if cmd_cfg.consensus_threshold is not None:
-            agent_count = len(cmd_cfg.agents) if cmd_cfg.agents else enabled_count
-            if cmd_cfg.consensus_threshold > agent_count:
-                raise ValueError(
-                    f"Command '{name}' consensus_threshold "
-                    f"({cmd_cfg.consensus_threshold}) exceeds its "
-                    f"agent count ({agent_count})"
-                )
 
     return config
+
+
+def _insert_builtin_commands(config: MultiAgentConfig) -> None:
+    """Insert or merge built-in command defaults."""
+    for builtin_name, builtin_default in (
+        ("review", DEFAULT_REVIEW_COMMAND),
+        ("ask", DEFAULT_ASK_COMMAND),
+    ):
+        if builtin_name not in config.commands:
+            config.commands[builtin_name] = dataclasses.replace(builtin_default)
+        else:
+            merged = dataclasses.replace(builtin_default)
+            for fld in dataclasses.fields(CommandConfig):
+                val = getattr(config.commands[builtin_name], fld.name)
+                if val != fld.default and val != (
+                    fld.default_factory() if fld.default_factory is not dataclasses.MISSING  # type: ignore[comparison-overlap]
+                    else fld.default
+                ):
+                    setattr(merged, fld.name, val)
+            config.commands[builtin_name] = merged
+
+
+# ---------------------------------------------------------------------------
+# Cascading resolution
+# ---------------------------------------------------------------------------
+
+def _first_set(*values: Any) -> Any:
+    """Return the first value that is not None."""
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def resolve_run_config(
+    config: MultiAgentConfig,
+    cmd_name: str | None = None,
+    cmd_config: CommandConfig | None = None,
+) -> ResolvedRunConfig:
+    """Build a fully resolved run config from raw config + command.
+
+    Applies cascading: command > agent > general for per-agent settings,
+    command > general for per-run settings.  Agent filtering from
+    cmd_config.agents is applied here.
+    """
+    cmd = cmd_config or CommandConfig()
+    general = config.general
+
+    # Determine which agents participate
+    if cmd.agents:
+        agents = {k: v for k, v in config.agents.items()
+                  if k in cmd.agents and v.enabled}
+    else:
+        agents = {k: v for k, v in config.agents.items() if v.enabled}
+
+    # Resolve per-agent settings
+    agent_settings: dict[str, ResolvedAgentSettings] = {}
+    for name, agent_cfg in agents.items():
+        propose_model = _first_set(
+            cmd.propose_model, agent_cfg.propose_model, general.propose_model,
+        )
+        review_model = _first_set(
+            cmd.review_model, agent_cfg.review_model,
+            general.review_model,
+        )
+        # review_model falls back to propose_model if still None
+        if review_model is None:
+            review_model = _first_set(
+                cmd.propose_model, agent_cfg.propose_model, general.propose_model,
+            )
+
+        agent_settings[name] = ResolvedAgentSettings(
+            propose_model=propose_model,
+            review_model=review_model,
+            propose_max_turns=_first_set(
+                cmd.propose_max_turns, agent_cfg.propose_max_turns,
+                general.propose_max_turns,
+            ),
+            review_max_turns=_first_set(
+                cmd.review_max_turns, agent_cfg.review_max_turns,
+                general.review_max_turns,
+            ),
+            timeout_seconds=_first_set(
+                cmd.timeout_seconds, agent_cfg.timeout_seconds,
+                general.timeout_seconds,
+            ),
+            allowed_tools=_first_set(
+                cmd.allowed_tools, agent_cfg.allowed_tools,
+                general.allowed_tools,
+            ),
+            file_patterns=_first_set(
+                cmd.file_patterns, agent_cfg.file_patterns,
+                general.file_patterns,
+            ),
+            reference_directories=_first_set(
+                cmd.reference_directories, agent_cfg.reference_directories,
+                general.reference_directories,
+            ),
+            max_reference_size_kb=_first_set(
+                cmd.max_reference_size_kb, agent_cfg.max_reference_size_kb,
+                general.max_reference_size_kb,
+            ),
+        )
+
+    # Resolve per-run settings (command > general)
+    max_rounds = _first_set(cmd.max_rounds, general.max_rounds)
+    min_severity = _first_set(cmd.min_severity, general.min_severity)
+    min_blocking_severity = _first_set(
+        cmd.min_blocking_severity, general.min_blocking_severity,
+    )
+    consensus_threshold = _first_set(
+        cmd.consensus_threshold, general.consensus_threshold,
+    )
+    consensus_threshold = min(consensus_threshold, len(agents))
+
+    # --- Semantic validation on resolved values ---
+    valid_severities = ("critical", "major", "minor", "suggestion")
+    if min_severity not in valid_severities:
+        raise ValueError(
+            f"min_severity must be one of {valid_severities}, "
+            f"got '{min_severity}'"
+        )
+    if min_blocking_severity not in valid_severities:
+        raise ValueError(
+            f"min_blocking_severity must be one of {valid_severities}, "
+            f"got '{min_blocking_severity}'"
+        )
+    from multi_agent.models import severity_index
+    if severity_index(min_blocking_severity) > severity_index(min_severity):
+        raise ValueError(
+            f"min_blocking_severity ('{min_blocking_severity}') "
+            f"cannot be less severe than min_severity "
+            f"('{min_severity}')"
+        )
+    if max_rounds < 1:
+        raise ValueError("max_rounds must be at least 1")
+    if consensus_threshold > len(agents):
+        raise ValueError(
+            f"consensus_threshold ({consensus_threshold}) "
+            f"exceeds enabled agent count ({len(agents)})"
+        )
+
+    from multi_agent.claude_runner import KNOWN_TOOLS
+    for name, settings in agent_settings.items():
+        invalid = set(settings.allowed_tools) - KNOWN_TOOLS
+        if invalid:
+            raise ValueError(
+                f"Unknown tool(s) for agent '{name}': "
+                f"{', '.join(sorted(invalid))}"
+            )
+
+    return ResolvedRunConfig(
+        agent_settings=agent_settings,
+        max_rounds=max_rounds,
+        min_severity=min_severity,
+        min_blocking_severity=min_blocking_severity,
+        consensus_threshold=consensus_threshold,
+        agents=agents,
+        backend=general.backend,
+        command_name=cmd_name,
+        command_prompt=cmd.prompt if cmd.prompt else None,
+        command_propose_instructions=cmd.propose_instructions,
+    )

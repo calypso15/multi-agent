@@ -8,9 +8,11 @@ from multi_agent.backend import AgentResult
 from multi_agent.config import (
     AgentConfig,
     CommandConfig,
+    DEFAULT_ASK_COMMAND,
     GeneralConfig,
     MultiAgentConfig,
     load_config,
+    resolve_run_config,
 )
 from multi_agent.models import TokenUsage
 
@@ -24,16 +26,14 @@ def _make_agent_result(output=None, error=None):
     )
 
 
-def _make_config(agents=None):
+def _make_resolved(agents=None):
     if agents is None:
         agents = {
             "alpha": AgentConfig(system_prompt="Alpha."),
             "beta": AgentConfig(system_prompt="Beta."),
         }
-    return MultiAgentConfig(
-        general=GeneralConfig(),
-        agents=agents,
-    )
+    config = MultiAgentConfig(general=GeneralConfig(), agents=agents)
+    return resolve_run_config(config, "ask", config.commands.get("ask", DEFAULT_ASK_COMMAND))
 
 
 # --- DEFAULT_ASK_COMMAND in load_config ---
@@ -72,7 +72,7 @@ class TestDefaultAskCommand:
             '[agents.alpha]\nsystem_prompt = "A"\n'
             '[agents.beta]\nsystem_prompt = "B"\n'
             '[commands.ask]\n'
-            'review_model = "claude-haiku-4-5-20251001"\n'
+            'review_model = "haiku"\n'
             'agents = ["alpha"]\n'
         )
         p = tmp_path / "multi_agent.toml"
@@ -80,10 +80,9 @@ class TestDefaultAskCommand:
         config = load_config(path=p)
         ask = config.commands["ask"]
         # TOML overrides applied
-        assert ask.review_model == "claude-haiku-4-5-20251001"
+        assert ask.review_model == "haiku"
         assert ask.agents == ["alpha"]
         # Defaults inherited
-        from multi_agent.config import DEFAULT_ASK_COMMAND
         assert ask.prompt == DEFAULT_ASK_COMMAND.prompt
         assert ask.propose_instructions == DEFAULT_ASK_COMMAND.propose_instructions
 
@@ -91,19 +90,15 @@ class TestDefaultAskCommand:
 # --- _run_ask ---
 
 
-from multi_agent.config import DEFAULT_ASK_COMMAND
-
-
 class TestRunAsk:
-    def _call(self, config, repo_root, question):
-        """Call _run_ask with the default ask command config."""
+    def _call(self, tmp_path, question):
+        """Call _run_ask with a default resolved config."""
         from multi_agent.cli import _run_ask
-        return _run_ask(config, repo_root, question, "ask", DEFAULT_ASK_COMMAND)
+        resolved = _make_resolved()
+        return _run_ask(resolved, tmp_path, question)
 
     def test_question_and_answer_files_persist(self, tmp_path):
         """Both question and answer files remain after a successful run."""
-        config = _make_config()
-
         mock_result = type("R", (), {
             "merged_texts": {".multi_agent_ask_answer.md": "The answer."},
             "consensus_reached": True,
@@ -125,7 +120,7 @@ class TestRunAsk:
              patch("multi_agent.cli.print_token_usage"):
             mock_asyncio.run.return_value = mock_result
 
-            self._call(config, tmp_path, "What is X?")
+            self._call(tmp_path, "What is X?")
 
         assert (tmp_path / ".multi_agent_ask_question.md").exists()
         assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
@@ -134,8 +129,6 @@ class TestRunAsk:
 
     def test_answer_file_written_with_merged_text(self, tmp_path):
         """The answer file on disk contains the consensus answer, not the question."""
-        config = _make_config()
-
         mock_result = type("R", (), {
             "merged_texts": {".multi_agent_ask_answer.md": "The answer is 42."},
             "consensus_reached": True,
@@ -157,15 +150,15 @@ class TestRunAsk:
              patch("multi_agent.cli.print_token_usage"):
             mock_asyncio.run.return_value = mock_result
 
-            exit_code = self._call(config, tmp_path, "What is the answer?")
+            from multi_agent.cli import _run_ask
+            resolved = _make_resolved()
+            exit_code = _run_ask(resolved, tmp_path, "What is the answer?")
 
         assert exit_code == 0
         mock_print_answer.assert_called_once_with("The answer is 42.")
 
     def test_no_edits_leaves_question_in_both_files(self, tmp_path):
         """When agents propose no edits, question file persists, answer has question."""
-        config = _make_config()
-
         with patch("multi_agent.cli._create_backend"), \
              patch("multi_agent.context.load_reference", return_value={}), \
              patch("multi_agent.context.count_uncommitted_reference", return_value=0), \
@@ -180,7 +173,7 @@ class TestRunAsk:
             })()
             mock_asyncio.run.return_value = mock_result
 
-            self._call(config, tmp_path, "What is X?")
+            self._call(tmp_path, "What is X?")
 
         assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
         # Answer file still has the question (no edits were applied)
@@ -188,7 +181,6 @@ class TestRunAsk:
 
     def test_question_written_to_answer_file_before_loop(self, tmp_path):
         """The question is in the answer file when the iteration loop reads it."""
-        config = _make_config()
         captured_contents = []
 
         def capture_run(coro):
@@ -210,9 +202,79 @@ class TestRunAsk:
              patch("multi_agent.cli.print_token_usage"):
             mock_asyncio.run.side_effect = capture_run
 
-            self._call(config, tmp_path, "My question?")
+            self._call(tmp_path, "My question?")
 
         assert captured_contents == ["My question?"]
+
+
+# --- Cascade resolution ---
+
+
+class TestCascadeResolution:
+    def test_command_overrides_agent_overrides_general(self):
+        agents = {
+            "alpha": AgentConfig(system_prompt="A.", timeout_seconds=900),
+            "beta": AgentConfig(system_prompt="B."),
+        }
+        config = MultiAgentConfig(
+            general=GeneralConfig(timeout_seconds=600),
+            agents=agents,
+        )
+        cmd = CommandConfig(prompt="task", timeout_seconds=1200)
+        resolved = resolve_run_config(config, "test", cmd)
+        # Command overrides agent and general
+        assert resolved.agent_settings["alpha"].timeout_seconds == 1200
+        assert resolved.agent_settings["beta"].timeout_seconds == 1200
+
+    def test_agent_overrides_general(self):
+        agents = {
+            "alpha": AgentConfig(system_prompt="A.", timeout_seconds=900),
+            "beta": AgentConfig(system_prompt="B."),
+        }
+        config = MultiAgentConfig(
+            general=GeneralConfig(timeout_seconds=600),
+            agents=agents,
+        )
+        resolved = resolve_run_config(config)
+        assert resolved.agent_settings["alpha"].timeout_seconds == 900
+        assert resolved.agent_settings["beta"].timeout_seconds == 600
+
+    def test_review_model_falls_back_to_propose_model(self):
+        agents = {
+            "alpha": AgentConfig(system_prompt="A.", propose_model="sonnet"),
+            "beta": AgentConfig(system_prompt="B."),
+        }
+        config = MultiAgentConfig(general=GeneralConfig(), agents=agents)
+        resolved = resolve_run_config(config)
+        # alpha: review_model should fall back to propose_model
+        assert resolved.agent_settings["alpha"].review_model == "sonnet"
+        # beta: both None (backend default)
+        assert resolved.agent_settings["beta"].review_model is None
+
+    def test_allowed_tools_empty_list_is_explicit(self):
+        """Empty list [] means 'no tools', not 'inherit'."""
+        agents = {
+            "alpha": AgentConfig(system_prompt="A.", allowed_tools=[]),
+            "beta": AgentConfig(system_prompt="B."),
+        }
+        config = MultiAgentConfig(
+            general=GeneralConfig(allowed_tools=["WebSearch"]),
+            agents=agents,
+        )
+        resolved = resolve_run_config(config)
+        assert resolved.agent_settings["alpha"].allowed_tools == []
+        assert resolved.agent_settings["beta"].allowed_tools == ["WebSearch"]
+
+    def test_per_run_settings_from_command(self):
+        agents = {
+            "alpha": AgentConfig(system_prompt="A."),
+            "beta": AgentConfig(system_prompt="B."),
+        }
+        config = MultiAgentConfig(general=GeneralConfig(max_rounds=3), agents=agents)
+        cmd = CommandConfig(prompt="task", max_rounds=5, min_severity="major")
+        resolved = resolve_run_config(config, "test", cmd)
+        assert resolved.max_rounds == 5
+        assert resolved.min_severity == "major"
 
 
 # --- ask CLI command ---

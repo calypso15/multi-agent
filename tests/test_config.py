@@ -11,6 +11,7 @@ from multi_agent.config import (
     _find_config_file,
     get_display_name,
     load_config,
+    resolve_run_config,
 )
 
 
@@ -122,11 +123,12 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="empty.*display_name"):
             load_config(path=p)
 
-    def test_consensus_threshold_exceeds_agents_raises(self, tmp_path):
+    def test_consensus_threshold_capped_to_agent_count(self, tmp_path):
         toml = '[general]\nconsensus_threshold = 5\n' + _minimal_toml()
         p = _write_toml(tmp_path, toml)
-        with pytest.raises(ValueError, match="consensus_threshold.*exceeds"):
-            load_config(path=p)
+        config = load_config(path=p)
+        resolved = resolve_run_config(config)
+        assert resolved.consensus_threshold == 2  # capped to 2 enabled agents
 
     def test_fewer_than_two_agents_raises(self, tmp_path):
         toml = '[general]\nconsensus_threshold = 1\n[agents.alpha]\nsystem_prompt = "A"\n'
@@ -137,20 +139,23 @@ class TestLoadConfig:
     def test_max_rounds_less_than_one_raises(self, tmp_path):
         toml = '[general]\nmax_rounds = 0\n' + _minimal_toml()
         p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
         with pytest.raises(ValueError, match="max_rounds"):
-            load_config(path=p)
+            resolve_run_config(config)
 
     def test_invalid_severity_raises(self, tmp_path):
         toml = '[general]\nmin_severity = "extreme"\n' + _minimal_toml()
         p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
         with pytest.raises(ValueError, match="min_severity"):
-            load_config(path=p)
+            resolve_run_config(config)
 
     def test_invalid_blocking_severity_raises(self, tmp_path):
         toml = '[general]\nmin_blocking_severity = "extreme"\n' + _minimal_toml()
         p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
         with pytest.raises(ValueError, match="min_blocking_severity"):
-            load_config(path=p)
+            resolve_run_config(config)
 
     def test_blocking_less_severe_than_min_raises(self, tmp_path):
         toml = (
@@ -159,8 +164,9 @@ class TestLoadConfig:
             + _minimal_toml()
         )
         p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
         with pytest.raises(ValueError, match="min_blocking_severity.*less severe"):
-            load_config(path=p)
+            resolve_run_config(config)
 
     def test_valid_blocking_severity(self, tmp_path):
         toml = (

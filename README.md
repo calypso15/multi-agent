@@ -197,8 +197,8 @@ Agents are fully defined in the TOML file. You can add, remove, or customize any
 | `system_prompt` | **required** | The agent's specialty/focus prompt |
 | `display_name` | titlecased key | Human-readable name for terminal output |
 | `enabled` | `true` | Disable an agent to skip it |
-| `propose_model` | — | Claude model for the propose phase (e.g., `claude-sonnet-4-6`) |
-| `review_model` | same as `propose_model` | Model for review rounds (e.g., `claude-haiku-4-5-20251001` for speed) |
+| `propose_model` | — | Claude model for the propose phase (e.g., `sonnet`) |
+| `review_model` | same as `propose_model` | Model for review rounds (e.g., `haiku` for speed) |
 | `allowed_tools` | `[]` | Tools available during the propose phase (e.g., `["WebSearch", "WebFetch"]`) |
 | `propose_max_turns` | inherits from general | Override max turns for this agent's propose phase |
 | `review_max_turns` | inherits from general | Override max turns for this agent's review phase |
@@ -225,7 +225,7 @@ prompt = "Review the submitted content from your specialty perspective and propo
 
 [commands.expand]
 description = "Expand files with richer detail via consensus"
-propose_model = "claude-sonnet-4-6"
+propose_model = "sonnet"
 prompt = "Your goal is to enrich the submitted content. Add vivid descriptions, flesh out thin scenes..."
 
 [commands.deepen-characters]
@@ -251,15 +251,15 @@ review_max_turns = 2
 
 [agents.accuracy]
 display_name = "Accuracy"
-propose_model = "claude-sonnet-4-6"
-review_model = "claude-haiku-4-5-20251001"
+propose_model = "sonnet"
+review_model = "haiku"
 allowed_tools = ["WebSearch", "WebFetch"]
 system_prompt = "You are the Accuracy Reviewer. Verify all claims, data, and references..."
 
 [agents.consistency]
 display_name = "Consistency"
-propose_model = "claude-sonnet-4-6"
-review_model = "claude-haiku-4-5-20251001"
+propose_model = "sonnet"
+review_model = "haiku"
 system_prompt = "You are the Consistency Reviewer. Ensure alignment with reference files..."
 
 [commands.simplify]
