@@ -14,6 +14,8 @@ from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
     init_agent_styles,
+    is_verbose,
+    print_agent_verbose_stats,
     print_answer,
     print_arbitration_done,
     print_arbitration_start,
@@ -28,9 +30,13 @@ from multi_agent.output import (
     print_no_edits,
     print_no_files,
     print_progress,
+    print_propose_start,
     print_proposals_summary,
+    print_resolved_config,
     print_review_round,
+    print_review_start,
     print_token_usage,
+    set_verbose,
 )
 
 
@@ -96,6 +102,8 @@ def _make_toml_command(cmd_name: str, cmd_config: CommandConfig) -> click.Comman
                   help="Override max iteration rounds.")
     @click.option("--prompt", "prompt", default=None,
                   help="Additional instructions for the agents.")
+    @click.option("--verbose", "-v", is_flag=True, default=False,
+                  help="Show detailed agent activity, config, and token usage.")
     @click.pass_context
     def cmd(
         ctx: click.Context,
@@ -104,7 +112,9 @@ def _make_toml_command(cmd_name: str, cmd_config: CommandConfig) -> click.Comman
         dry_run: bool,
         max_rounds: int | None,
         prompt: str | None,
+        verbose: bool,
     ) -> None:
+        set_verbose(verbose)
         _review_common(
             ctx, files, config_path, False, dry_run, max_rounds, cmd_name, prompt,
         )
@@ -158,7 +168,7 @@ def _create_backend(resolved):
     raise ValueError(f"Unknown backend: {resolved.backend}")
 
 
-def _make_phase_handler():
+def _make_phase_handler(resolved=None):
     """Create a callback that prints phase results as they complete."""
     from multi_agent.models import (
         ArbitrationDone,
@@ -166,17 +176,35 @@ def _make_phase_handler():
         DissentsDone,
         PhaseEvent,
         ProposeDone,
+        ProposeStart,
         ReviewDone,
+        ReviewStart,
     )
 
     def on_phase(event: PhaseEvent) -> None:
         match event:
+            case ProposeStart():
+                print_propose_start()
+            case ReviewStart(round_number=rn):
+                print_review_start(rn)
             case ProposeDone(proposals=proposals):
                 print_proposals_summary(proposals)
+                if is_verbose() and resolved:
+                    for p in proposals:
+                        print_agent_verbose_stats(
+                            p.agent_name, p.turns_taken,
+                            p.tool_usage, p.usage,
+                        )
             case ReviewDone(round_number=rn, reviews=reviews,
                             consensus_threshold=ct,
                             blocking_approvals=ba):
                 print_review_round(rn, reviews, ct, blocking_approvals=ba)
+                if is_verbose() and resolved:
+                    for r in reviews:
+                        print_agent_verbose_stats(
+                            r.agent_name, r.turns_taken,
+                            r.tool_usage, r.usage,
+                        )
             case ArbitrationStart(contested=contested):
                 print_arbitration_start(contested)
             case ArbitrationDone(results=results):
@@ -204,10 +232,12 @@ def _run_iteration_and_present(
     from multi_agent.context import apply_merged_texts, build_diff_preview_from_merged
 
     backend = _create_backend(resolved)
-    on_phase = _make_phase_handler()
+    on_phase = _make_phase_handler(resolved)
 
     display_task = task_label or resolved.command_name
     print_header(files_display, ref_count, ref_size_kb, uncommitted_ref, task=display_task)
+    if is_verbose():
+        print_resolved_config(resolved)
 
     result = asyncio.run(run_iteration_loop(
         resolved, str(repo_root), backend, target_files=target_files,
@@ -420,6 +450,8 @@ def _review_common(
               help="Run a command from [commands] config (e.g. expand, contract).")
 @click.option("--prompt", "prompt", default=None,
               help="Additional instructions for the agents.")
+@click.option("--verbose", "-v", is_flag=True, default=False,
+              help="Show detailed agent activity, config, and token usage.")
 @click.pass_context
 def review(
     ctx: click.Context,
@@ -430,6 +462,7 @@ def review(
     max_rounds: int | None,
     task_name: str | None,
     prompt: str | None,
+    verbose: bool,
 ) -> None:
     """Review files and propose changes via consensus.
 
@@ -443,6 +476,7 @@ def review(
         multi-agent review --prompt "Add epigraphs to each section" docs/
         multi-agent review                  # reviews staged files
     """
+    set_verbose(verbose)
     _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name, prompt)
 
 
@@ -472,7 +506,7 @@ def _run_ask(
     )
 
     backend = _create_backend(resolved)
-    on_phase = _make_phase_handler()
+    on_phase = _make_phase_handler(resolved)
 
     question_name = ".multi_agent_ask_question.md"
     answer_name = ".multi_agent_ask_answer.md"
@@ -486,6 +520,8 @@ def _run_ask(
     print_header(
         [answer_name], len(ref), ref_size_kb, uncommitted, task=resolved.command_name,
     )
+    if is_verbose():
+        print_resolved_config(resolved)
 
     result = asyncio.run(run_iteration_loop(
         resolved, str(repo_root), backend,
@@ -533,12 +569,15 @@ def _run_ask(
               help="Path to multi_agent.toml config file.")
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
+@click.option("--verbose", "-v", is_flag=True, default=False,
+              help="Show detailed agent activity, config, and token usage.")
 @click.pass_context
 def ask(
     ctx: click.Context,
     question: tuple[str, ...],
     config_path: str | None,
     max_rounds: int | None,
+    verbose: bool,
 ) -> None:
     """Ask a question and get a consensus answer from all agents.
 
@@ -548,6 +587,7 @@ def ask(
         multi-agent ask What is the best approach for character development
         multi-agent ask --max-rounds 5 "How should we handle the timeline?"
     """
+    set_verbose(verbose)
     question_text = " ".join(question)
     if not question_text.strip():
         raise click.BadParameter("Question cannot be empty.", param_hint="'QUESTION'")

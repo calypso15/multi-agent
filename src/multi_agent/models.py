@@ -85,6 +85,8 @@ class AgentProposal:
     duration_seconds: float = 0.0
     error: str | None = None
     usage: TokenUsage = field(default_factory=TokenUsage)
+    turns_taken: int = 0
+    tool_usage: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,6 +107,8 @@ class AgentReviewResponse:
     duration_seconds: float = 0.0
     error: str | None = None
     usage: TokenUsage = field(default_factory=TokenUsage)
+    turns_taken: int = 0
+    tool_usage: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -121,6 +125,8 @@ class Dissent:
     opinion: str
     duration_seconds: float = 0.0
     usage: TokenUsage = field(default_factory=TokenUsage)
+    turns_taken: int = 0
+    tool_usage: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,6 +167,16 @@ class IterationResult:
 
 
 @dataclass
+class ProposeStart:
+    pass
+
+
+@dataclass
+class ReviewStart:
+    round_number: int
+
+
+@dataclass
 class ProposeDone:
     proposals: list[AgentProposal]
 
@@ -188,7 +204,12 @@ class DissentsDone:
     dissents: list[Dissent]
 
 
-PhaseEvent = Union[ProposeDone, ReviewDone, ArbitrationStart, ArbitrationDone, DissentsDone]
+PhaseEvent = Union[
+    ProposeStart, ReviewStart,
+    ProposeDone, ReviewDone,
+    ArbitrationStart, ArbitrationDone,
+    DissentsDone,
+]
 
 
 # --- Helpers ---

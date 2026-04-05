@@ -40,7 +40,9 @@ from multi_agent.models import (
     PhaseEvent,
     ProposalReview,
     ProposeDone,
+    ProposeStart,
     ReviewDone,
+    ReviewStart,
     TokenUsage,
     count_approvals,
     count_blocking_approvals,
@@ -252,6 +254,7 @@ async def _run_single_proposer(
         return AgentProposal(
             agent_name=agent_name, edits=[], summary="Agent failed.",
             error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
+            turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
         )
 
     edits = parse_edits(raw.output.get("edits", []))
@@ -262,6 +265,7 @@ async def _run_single_proposer(
         agent_name=agent_name, edits=edits,
         summary=raw.output.get("summary", ""),
         duration_seconds=raw.duration_seconds, usage=raw.usage,
+        turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
     )
 
 
@@ -291,6 +295,7 @@ async def _run_single_reviewer(
             agent_name=agent_name, all_approved=True,  # failed agent doesn't block
             proposal_reviews=[], summary="Agent failed.",
             error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
+            turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
         )
 
     all_approved = raw.output.get("all_approved", True)
@@ -311,6 +316,7 @@ async def _run_single_reviewer(
         proposal_reviews=proposal_reviews,
         summary=raw.output.get("summary", ""),
         duration_seconds=raw.duration_seconds, usage=raw.usage,
+        turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
     )
 
 
@@ -336,6 +342,7 @@ async def _run_single_dissenter(
         return Dissent(
             agent_name=agent_name, opinion="",
             duration_seconds=raw.duration_seconds, usage=raw.usage,
+            turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
         )
 
     opinion = raw.output.get("opinion", "")
@@ -345,6 +352,7 @@ async def _run_single_dissenter(
     return Dissent(
         agent_name=agent_name, opinion=opinion,
         duration_seconds=raw.duration_seconds, usage=raw.usage,
+        turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
     )
 
 
@@ -777,6 +785,9 @@ async def run_iteration_loop(
     # 3. Propose phase
     total_usage = TokenUsage()
 
+    if on_phase:
+        on_phase(ProposeStart())
+
     proposals = await run_propose_phase(
         resolved, file_contents, reference, staged_diff, repo_root, backend,
         on_progress=on_progress,
@@ -847,6 +858,9 @@ async def run_iteration_loop(
     previous_reviews: list[AgentReviewResponse] | None = None
 
     for round_num in range(resolved.max_rounds):
+        if on_phase:
+            on_phase(ReviewStart(round_number=round_num))
+
         reviews = await run_review_phase(
             resolved, current_proposals, file_contents, review_reference,
             repo_root, round_num, backend, on_progress,

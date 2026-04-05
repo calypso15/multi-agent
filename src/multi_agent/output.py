@@ -30,6 +30,18 @@ _COLOR_PALETTE = [
 
 _DISPLAY_NAMES: dict[str, str] = {}
 _COLORS: dict[str, str] = {}
+_VERBOSE = False
+
+
+def set_verbose(value: bool) -> None:
+    """Enable or disable verbose output."""
+    global _VERBOSE
+    _VERBOSE = value
+
+
+def is_verbose() -> bool:
+    """Return whether verbose output is enabled."""
+    return _VERBOSE
 
 
 def init_agent_styles(agents: dict[str, AgentConfig]) -> None:
@@ -141,10 +153,22 @@ def _agent_table(rows: list[tuple[str, str, Text, float]]) -> Table:
     return table
 
 
+def print_propose_start() -> None:
+    """Print the Propose Phase header before agents run."""
+    console.print()
+    console.print(Rule("[bold magenta]Propose Phase[/bold magenta]", style="magenta"))
+
+
+def print_review_start(round_number: int) -> None:
+    """Print the Review Round header before agents run."""
+    label = f"Review Round {round_number + 1}"
+    console.print()
+    console.print(Rule(f"[bold cyan]{label}[/bold cyan]", style="cyan"))
+
+
 def print_proposals_summary(proposals: list[AgentProposal]) -> None:
     """Print a summary of what each agent proposed."""
     console.print()
-    console.print(Rule("[bold magenta]Propose Phase[/bold magenta]", style="magenta"))
 
     rows = []
     for proposal in proposals:
@@ -194,7 +218,6 @@ def print_review_round(
     reached = effective >= consensus_threshold
 
     color = "green" if reached else "yellow"
-    label = f"Review Round {round_number + 1}"
     if blocking_approvals is not None and blocking_approvals != approvals:
         status = (
             f"{blocking_approvals}/{total} blocking-approved, "
@@ -204,10 +227,7 @@ def print_review_round(
         status = f"{approvals}/{total} approved (need {consensus_threshold})"
 
     console.print()
-    console.print(Rule(
-        f"[bold {color}]{label}[/bold {color}]  [dim]{status}[/dim]",
-        style=color,
-    ))
+    console.print(f"  [{color} bold]{status}[/{color} bold]")
 
     rows = []
     for review in reviews:
@@ -381,6 +401,96 @@ def print_changes_applied(files: list[str]) -> None:
         f"[green]Changes applied to {len(files)} file(s):[/green] "
         + ", ".join(files)
     )
+
+
+def print_resolved_config(resolved) -> None:
+    """Print resolved configuration details for each agent."""
+    from multi_agent.config import get_display_name
+
+    console.print()
+    console.print(Rule("[bold blue]Resolved Config[/bold blue]", style="blue"))
+
+    # Run-level settings
+    run_table = Table(show_header=False, box=None, padding=(0, 2))
+    run_table.add_column(style="dim")
+    run_table.add_column()
+    run_table.add_row("Max rounds", str(resolved.max_rounds))
+    run_table.add_row("Consensus threshold", str(resolved.consensus_threshold))
+    run_table.add_row("Min severity", resolved.min_severity)
+    run_table.add_row("Min blocking severity", resolved.min_blocking_severity)
+    run_table.add_row("Backend", resolved.backend)
+    console.print(run_table)
+
+    # Per-agent settings
+    for name, settings in resolved.agent_settings.items():
+        display = _DISPLAY_NAMES.get(name, name)
+        color = _agent_style(name)
+        console.print(f"\n  [{color} bold]{display}[/{color} bold]")
+
+        agent_table = Table(show_header=False, box=None, padding=(0, 2))
+        agent_table.add_column(style="dim")
+        agent_table.add_column()
+
+        propose_model = settings.propose_model or "default"
+        review_model = settings.review_model or "default"
+        if propose_model == review_model:
+            agent_table.add_row("    Model", propose_model)
+        else:
+            agent_table.add_row("    Propose model", propose_model)
+            agent_table.add_row("    Review model", review_model)
+
+        propose_turns = str(settings.propose_max_turns) if settings.propose_max_turns else "unlimited"
+        review_turns = str(settings.review_max_turns) if settings.review_max_turns else "unlimited"
+        if propose_turns == review_turns:
+            agent_table.add_row("    Max turns", propose_turns)
+        else:
+            agent_table.add_row("    Propose max turns", propose_turns)
+            agent_table.add_row("    Review max turns", review_turns)
+
+        agent_table.add_row("    Timeout", f"{settings.timeout_seconds}s")
+        agent_table.add_row("    Tools", ", ".join(sorted(settings.allowed_tools)) or "none")
+        if settings.file_patterns:
+            agent_table.add_row("    File patterns", ", ".join(settings.file_patterns))
+        if settings.reference_directories:
+            agent_table.add_row("    Reference dirs", ", ".join(settings.reference_directories))
+
+        console.print(agent_table)
+
+
+def print_agent_verbose_stats(
+    agent_name: str,
+    turns_taken: int,
+    tool_usage: dict[str, int],
+    usage: TokenUsage,
+) -> None:
+    """Print verbose per-agent stats: turns, tools, tokens."""
+    display = _DISPLAY_NAMES.get(agent_name, agent_name)
+    color = _agent_style(agent_name)
+
+    parts: list[str] = []
+
+    # Turns
+    parts.append(f"turns: {turns_taken}")
+
+    # Tool usage
+    if tool_usage:
+        tool_parts = ", ".join(f"{t} x{c}" for t, c in sorted(tool_usage.items()))
+        parts.append(f"tools: {tool_parts}")
+
+    # Token breakdown
+    total_input = (
+        usage.input_tokens
+        + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens
+    )
+    token_parts = [f"in: {total_input:,}", f"out: {usage.output_tokens:,}"]
+    if usage.cache_read_input_tokens:
+        token_parts.append(f"cache read: {usage.cache_read_input_tokens:,}")
+    if usage.cache_creation_input_tokens:
+        token_parts.append(f"cache write: {usage.cache_creation_input_tokens:,}")
+    parts.append(f"tokens: {', '.join(token_parts)}")
+
+    console.print(f"    [{color}]{display}:[/{color}] [dim]{' | '.join(parts)}[/dim]")
 
 
 def print_token_usage(usage: TokenUsage, duration: float) -> None:

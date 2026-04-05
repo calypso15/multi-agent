@@ -99,13 +99,9 @@ class TestBuildCliArgs:
         assert args[0] == "claude"
         assert "--print" in args
 
-    def test_max_turns_positive_adds_flag(self):
-        args = build_cli_args("alpha", "prompt", None, "/repo", max_turns=5)
-        idx = args.index("--max-turns")
-        assert args[idx + 1] == "5"
-
-    def test_max_turns_zero_omits_flag(self):
-        args = build_cli_args("alpha", "prompt", None, "/repo", max_turns=0)
+    def test_no_max_turns_cli_flag(self):
+        """Turn limits are enforced at the stream level, not via CLI flag."""
+        args = build_cli_args("alpha", "prompt", None, "/repo")
         assert "--max-turns" not in args
 
     def test_model_adds_flag(self):

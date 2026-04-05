@@ -6,7 +6,7 @@ import asyncio
 import json
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from multi_agent.backend import AgentResult
@@ -16,6 +16,10 @@ from multi_agent.models import TokenUsage, extract_usage, unwrap_result
 # for partial results before giving up.
 _INTERRUPT_DRAIN_TIMEOUT = 10  # seconds to wait for process exit after SIGINT
 _GRACE_TIMEOUT = 60  # seconds for the resumed session to return results
+
+class _MaxTurnsExceeded(Exception):
+    """Raised by _drive_process when the agent exceeds its turn limit."""
+
 
 _RESUME_PROMPT = """\
 You have run out of time. Immediately return your response as JSON. \
@@ -51,6 +55,8 @@ class ClaudeResult:
     result_json: dict[str, Any] | None
     stdout: str
     stderr: str
+    turns_taken: int = 0
+    tool_usage: dict[str, int] = field(default_factory=dict)
 
 
 def _make_tool_callback(
@@ -64,6 +70,28 @@ def _make_tool_callback(
     def callback(tool_name: str, summary: str):
         detail = f" {summary}" if summary else ""
         on_progress(agent_name, f"  \u2192 {tool_name}{detail}")
+
+    return callback
+
+
+def _make_turn_callback(
+    agent_name: str,
+    on_progress: Callable[[str, str], None] | None,
+) -> Callable[[int], None] | None:
+    """Wrap on_progress to report turn changes (verbose only).
+
+    Turn counts come from ``message_stop`` stream events, which mark
+    completed turn boundaries.  The final count is overwritten by
+    ``num_turns`` from the CLI result event when available.
+    """
+    if not on_progress:
+        return None
+    from multi_agent.output import is_verbose
+    if not is_verbose():
+        return None
+
+    def callback(turn_number: int):
+        on_progress(agent_name, f"  turn {turn_number}")
 
     return callback
 
@@ -135,12 +163,17 @@ async def _drive_process(
     prompt: str,
     on_tool_use: Callable[[str, str], None] | None = None,
     on_drafting: Callable[[int], None] | None = None,
+    on_turn: Callable[[int], None] | None = None,
+    max_turns: int = 0,
 ) -> ClaudeResult:
     """Drive an already-created subprocess: send prompt, stream events, return result.
 
     Reads stdout line-by-line for stream-json events. Reports tool_use events
     via on_tool_use(tool_name, summary). Reports text generation progress via
     on_drafting(chars_so_far). Returns the final result event's JSON.
+
+    When *max_turns* > 0, raises ``_MaxTurnsExceeded`` after the agent
+    completes that many turns, allowing the caller to interrupt and resume.
     """
     proc.stdin.write(prompt.encode())
     await proc.stdin.drain()
@@ -150,6 +183,8 @@ async def _drive_process(
     all_lines: list[str] = []
     seen_tool_ids: set[str] = set()
     draft_chars = 0  # characters generated in current text block
+    turns = 0
+    tool_counts: dict[str, int] = {}
 
     while True:
         line_bytes = await proc.stdout.readline()
@@ -167,7 +202,7 @@ async def _drive_process(
 
         event_type = event.get("type", "")
 
-        if event_type == "assistant" and on_tool_use:
+        if event_type == "assistant":
             content = event.get("message", {}).get("content", [])
             for item in content:
                 if item.get("type") == "tool_use":
@@ -180,24 +215,36 @@ async def _drive_process(
                         continue
                     seen_tool_ids.add(tool_id)
                     tool_name = item.get("name", "unknown")
-                    tool_input = item.get("input", {})
-                    summary = _summarize_tool_call(tool_name, tool_input)
-                    on_tool_use(tool_name, summary)
+                    tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+                    if on_tool_use:
+                        tool_input = item.get("input", {})
+                        summary = _summarize_tool_call(tool_name, tool_input)
+                        on_tool_use(tool_name, summary)
 
-        elif event_type == "stream_event" and on_drafting:
+        elif event_type == "stream_event":
             inner = event.get("event", {})
             inner_type = inner.get("type", "")
-            if inner_type == "content_block_start":
+            if inner_type == "message_stop":
+                # A complete turn boundary — one message_stop per turn.
+                turns += 1
+                if on_turn:
+                    on_turn(turns)
+                if max_turns > 0 and turns >= max_turns:
+                    raise _MaxTurnsExceeded()
+            elif inner_type == "content_block_start":
                 draft_chars = 0
                 if on_drafting:
                     on_drafting(0)  # signal new block for per-turn reset
             elif inner_type == "content_block_delta":
-                delta = inner.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    draft_chars += len(delta.get("text", ""))
-                    on_drafting(draft_chars)
+                if on_drafting:
+                    delta = inner.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        draft_chars += len(delta.get("text", ""))
+                        on_drafting(draft_chars)
 
         elif event_type == "result":
+            # The result event includes the CLI's own num_turns count.
+            turns = event.get("num_turns", turns)
             result_json = event
 
     # Read stderr with a timeout to avoid hanging on large output
@@ -213,6 +260,8 @@ async def _drive_process(
         result_json=result_json,
         stdout="\n".join(all_lines),
         stderr=stderr_bytes.decode() if stderr_bytes else "",
+        turns_taken=turns,
+        tool_usage=tool_counts,
     )
 
 
@@ -351,10 +400,13 @@ def build_cli_args(
     system_prompt: str,
     model: str | None,
     repo_root: str,
-    max_turns: int = 0,
     allowed_tools: list[str] | None = None,
 ) -> list[str]:
-    """Build command-line arguments for a ``claude`` CLI invocation."""
+    """Build command-line arguments for a ``claude`` CLI invocation.
+
+    Turn limits (``max_turns``) are enforced by ``_drive_process`` at
+    the stream level, not via a CLI flag.
+    """
     args = [
         "claude",
         "--print",                       # Non-interactive, print result
@@ -362,9 +414,6 @@ def build_cli_args(
         "--verbose",                     # Required for stream-json with --print
         "--include-partial-messages",    # Stream deltas for progress reporting
     ]
-
-    if max_turns > 0:
-        args.extend(["--max-turns", str(max_turns)])
 
     args += [
         "--system-prompt", system_prompt,
@@ -397,10 +446,11 @@ async def _run_agent_impl(
     on_progress: Callable[[str, str], None] | None = None,
     progress_label: str = "running",
     report_tool_use: bool = True,
+    max_turns: int = 0,
 ) -> AgentResult:
     """Spawn a claude CLI agent and return the parsed result or error.
 
-    On timeout, attempts a graceful recovery:
+    On timeout or turn-limit, attempts a graceful recovery:
     1. SIGINT the process so the CLI exits cleanly with a session_id.
     2. Resume the session with a "return your results now" prompt.
     3. Parse the resumed output normally.
@@ -428,6 +478,8 @@ async def _run_agent_impl(
                 proc, prompt,
                 on_tool_use=_make_tool_callback(agent_name, on_progress) if report_tool_use else None,
                 on_drafting=_make_drafting_callback(agent_name, on_progress) if report_tool_use else None,
+                on_turn=_make_turn_callback(agent_name, on_progress),
+                max_turns=max_turns,
             ),
             timeout=timeout_seconds,
         )
@@ -440,6 +492,8 @@ async def _run_agent_impl(
                 output=None, usage=usage,
                 duration_seconds=time.monotonic() - start,
                 error=stderr_text[:500],
+                turns_taken=result.turns_taken,
+                tool_usage=result.tool_usage,
             )
 
         output = unwrap_result(result.result_json)
@@ -448,14 +502,24 @@ async def _run_agent_impl(
                 output=None, usage=usage,
                 duration_seconds=time.monotonic() - start,
                 error=f"Unparseable output: {result.stdout[:300]}",
+                turns_taken=result.turns_taken,
+                tool_usage=result.tool_usage,
             )
 
         return AgentResult(
             output=output, usage=usage,
             duration_seconds=time.monotonic() - start,
+            turns_taken=result.turns_taken,
+            tool_usage=result.tool_usage,
         )
 
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, _MaxTurnsExceeded) as limit_exc:
+        is_turn_limit = isinstance(limit_exc, _MaxTurnsExceeded)
+        reason = (
+            f"turn limit ({max_turns})" if is_turn_limit
+            else f"timeout ({timeout_seconds}s)"
+        )
+
         # Phase 1: SIGINT for clean shutdown, drain session_id
         session_id = None
         interrupted_usage = TokenUsage()
@@ -467,7 +531,7 @@ async def _run_agent_impl(
         # Phase 2: Resume the session for partial results
         if session_id:
             if on_progress:
-                on_progress(agent_name, "timed out \u2014 resuming for partial results")
+                on_progress(agent_name, f"{reason} \u2014 resuming for partial results")
 
             resumed = await _resume_for_results(session_id, repo_root)
             if resumed and resumed.output:
@@ -489,7 +553,7 @@ async def _run_agent_impl(
         return AgentResult(
             output=None, usage=interrupted_usage,
             duration_seconds=time.monotonic() - start,
-            error=f"Timed out after {timeout_seconds}s",
+            error=f"Exceeded {reason}",
         )
 
     except Exception as exc:
@@ -523,9 +587,10 @@ class ClaudeCliBackend:
     ) -> AgentResult:
         cli_args = build_cli_args(
             agent_name, system_prompt, model, repo_root,
-            max_turns=max_turns, allowed_tools=allowed_tools,
+            allowed_tools=allowed_tools,
         )
         return await _run_agent_impl(
             agent_name, prompt, cli_args, repo_root,
             timeout_seconds, on_progress, progress_label, report_tool_use,
+            max_turns=max_turns,
         )

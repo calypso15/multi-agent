@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from multi_agent.models import TokenUsage
@@ -15,6 +15,8 @@ class AgentResult:
     usage: TokenUsage
     duration_seconds: float
     error: str | None = None
+    turns_taken: int = 0
+    tool_usage: dict[str, int] = field(default_factory=dict)
 
 
 @runtime_checkable
