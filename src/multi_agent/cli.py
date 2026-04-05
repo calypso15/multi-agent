@@ -462,7 +462,7 @@ def _run_ask(
     command_review_model: str | None = None,
     task_label: str = "ask",
 ) -> int:
-    """Create a temp question file, run consensus, and display the answer."""
+    """Write question to two files, run consensus on the answer file, persist both."""
     from multi_agent.consensus import run_iteration_loop
     from multi_agent.context import load_reference, count_uncommitted_reference
 
@@ -489,56 +489,61 @@ def _run_ask(
         cmd_config = DEFAULT_ASK_COMMAND
     prompt_text = command_prompt or cmd_config.prompt
 
-    temp_name = ".multi_agent_ask.md"
-    temp_path = repo_root / temp_name
-    try:
-        temp_path.write_text(question)
+    question_name = ".multi_agent_ask_question.md"
+    answer_name = ".multi_agent_ask_answer.md"
+    question_path = repo_root / question_name
+    answer_path = repo_root / answer_name
 
-        print_header(
-            [temp_name], len(ref), ref_size_kb, uncommitted, task=task_label,
-        )
+    # Write the question to both files; agents will edit the answer file.
+    question_path.write_text(question)
+    answer_path.write_text(question)
 
-        result = asyncio.run(run_iteration_loop(
-            config, str(repo_root), backend,
-            target_files=[temp_name],
-            command_name=command_name,
-            command_prompt=prompt_text,
-            command_propose_model=command_propose_model or cmd_config.propose_model,
-            command_review_model=command_review_model or cmd_config.review_model,
-            on_progress=print_progress,
-            on_phase=on_phase,
-        ))
+    print_header(
+        [answer_name], len(ref), ref_size_kb, uncommitted, task=task_label,
+    )
 
-        if not result.merged_texts:
-            print_no_edits()
-            print_token_usage(result.total_usage, result.total_duration_seconds)
-            return 0
+    result = asyncio.run(run_iteration_loop(
+        config, str(repo_root), backend,
+        target_files=[answer_name],
+        command_name=command_name,
+        command_prompt=prompt_text,
+        command_propose_model=command_propose_model or cmd_config.propose_model,
+        command_review_model=command_review_model or cmd_config.review_model,
+        on_progress=print_progress,
+        on_phase=on_phase,
+    ))
 
-        answer = result.merged_texts.get(temp_name, "")
-
-        # Consensus status
-        if result.consensus_reached:
-            last_round = result.rounds[-1] if result.rounds else None
-            if last_round:
-                print_iteration_success(last_round.approvals, len(last_round.reviews))
-            else:
-                print_iteration_success(0, 0)
-        else:
-            total = len(result.rounds[-1].reviews) if result.rounds else 0
-            print_iteration_exhausted(
-                rounds_run=len(result.rounds),
-                max_rounds=config.general.max_rounds,
-                approvals=result.best_approvals,
-                total=total,
-                best_round=result.best_round,
-                stalled=result.stalled,
-            )
-
-        print_answer(answer)
+    if not result.merged_texts:
+        print_no_edits()
         print_token_usage(result.total_usage, result.total_duration_seconds)
         return 0
-    finally:
-        temp_path.unlink(missing_ok=True)
+
+    answer = result.merged_texts.get(answer_name, "")
+
+    # Persist the answer to disk so it survives after the console closes.
+    answer_path.write_text(answer)
+
+    # Consensus status
+    if result.consensus_reached:
+        last_round = result.rounds[-1] if result.rounds else None
+        if last_round:
+            print_iteration_success(last_round.approvals, len(last_round.reviews))
+        else:
+            print_iteration_success(0, 0)
+    else:
+        total = len(result.rounds[-1].reviews) if result.rounds else 0
+        print_iteration_exhausted(
+            rounds_run=len(result.rounds),
+            max_rounds=config.general.max_rounds,
+            approvals=result.best_approvals,
+            total=total,
+            best_round=result.best_round,
+            stalled=result.stalled,
+        )
+
+    print_answer(answer)
+    print_token_usage(result.total_usage, result.total_duration_seconds)
+    return 0
 
 
 @main.command()

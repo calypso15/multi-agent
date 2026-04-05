@@ -71,60 +71,48 @@ class TestDefaultAskCommand:
 
 
 class TestRunAsk:
-    def test_creates_and_cleans_temp_file(self, tmp_path):
-        """Temp file is created and cleaned up even when loop raises."""
+    def test_question_and_answer_files_persist(self, tmp_path):
+        """Both question and answer files remain after a successful run."""
         from multi_agent.cli import _run_ask
 
         config = _make_config()
-        temp_path = tmp_path / ".multi_agent_ask.md"
+
+        mock_result = type("R", (), {
+            "merged_texts": {".multi_agent_ask_answer.md": "The answer."},
+            "consensus_reached": True,
+            "rounds": [type("Round", (), {"approvals": 2, "reviews": [1, 2]})()],
+            "total_usage": TokenUsage(),
+            "total_duration_seconds": 1.0,
+            "best_approvals": 2,
+            "best_round": 0,
+            "stalled": False,
+        })()
 
         with patch("multi_agent.cli._create_backend"), \
              patch("multi_agent.context.load_reference", return_value={}), \
              patch("multi_agent.context.count_uncommitted_reference", return_value=0), \
              patch("multi_agent.cli.asyncio") as mock_asyncio, \
              patch("multi_agent.cli.print_header"), \
-             patch("multi_agent.cli.print_no_edits"), \
+             patch("multi_agent.cli.print_iteration_success"), \
+             patch("multi_agent.cli.print_answer"), \
              patch("multi_agent.cli.print_token_usage"):
-            # Simulate iteration loop returning no edits
-            mock_result = type("R", (), {
-                "merged_texts": {},
-                "total_usage": TokenUsage(),
-                "total_duration_seconds": 1.0,
-            })()
             mock_asyncio.run.return_value = mock_result
 
             _run_ask(config=config, repo_root=tmp_path, question="What is X?")
 
-        # Temp file should be cleaned up
-        assert not temp_path.exists()
+        assert (tmp_path / ".multi_agent_ask_question.md").exists()
+        assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
+        assert (tmp_path / ".multi_agent_ask_answer.md").exists()
+        assert (tmp_path / ".multi_agent_ask_answer.md").read_text() == "The answer."
 
-    def test_temp_file_cleaned_on_error(self, tmp_path):
-        """Temp file is cleaned up even when an error occurs."""
-        from multi_agent.cli import _run_ask
-
-        config = _make_config()
-        temp_path = tmp_path / ".multi_agent_ask.md"
-
-        with patch("multi_agent.cli._create_backend"), \
-             patch("multi_agent.context.load_reference", return_value={}), \
-             patch("multi_agent.context.count_uncommitted_reference", return_value=0), \
-             patch("multi_agent.cli.asyncio") as mock_asyncio, \
-             patch("multi_agent.cli.print_header"):
-            mock_asyncio.run.side_effect = RuntimeError("boom")
-
-            with pytest.raises(RuntimeError, match="boom"):
-                _run_ask(config=config, repo_root=tmp_path, question="What?")
-
-        assert not temp_path.exists()
-
-    def test_answer_extracted_from_merged_texts(self, tmp_path):
-        """When consensus produces merged text, it is used as the answer."""
+    def test_answer_file_written_with_merged_text(self, tmp_path):
+        """The answer file on disk contains the consensus answer, not the question."""
         from multi_agent.cli import _run_ask
 
         config = _make_config()
 
         mock_result = type("R", (), {
-            "merged_texts": {".multi_agent_ask.md": "The answer is 42."},
+            "merged_texts": {".multi_agent_ask_answer.md": "The answer is 42."},
             "consensus_reached": True,
             "rounds": [type("Round", (), {"approvals": 2, "reviews": [1, 2]})()],
             "total_usage": TokenUsage(),
@@ -151,18 +139,43 @@ class TestRunAsk:
         assert exit_code == 0
         mock_print_answer.assert_called_once_with("The answer is 42.")
 
-    def test_question_written_to_temp_file(self, tmp_path):
-        """The question text is written to the temp file before the loop runs."""
+    def test_no_edits_leaves_question_in_both_files(self, tmp_path):
+        """When agents propose no edits, question file persists, answer has question."""
+        from multi_agent.cli import _run_ask
+
+        config = _make_config()
+
+        with patch("multi_agent.cli._create_backend"), \
+             patch("multi_agent.context.load_reference", return_value={}), \
+             patch("multi_agent.context.count_uncommitted_reference", return_value=0), \
+             patch("multi_agent.cli.asyncio") as mock_asyncio, \
+             patch("multi_agent.cli.print_header"), \
+             patch("multi_agent.cli.print_no_edits"), \
+             patch("multi_agent.cli.print_token_usage"):
+            mock_result = type("R", (), {
+                "merged_texts": {},
+                "total_usage": TokenUsage(),
+                "total_duration_seconds": 1.0,
+            })()
+            mock_asyncio.run.return_value = mock_result
+
+            _run_ask(config=config, repo_root=tmp_path, question="What is X?")
+
+        assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
+        # Answer file still has the question (no edits were applied)
+        assert (tmp_path / ".multi_agent_ask_answer.md").read_text() == "What is X?"
+
+    def test_question_written_to_answer_file_before_loop(self, tmp_path):
+        """The question is in the answer file when the iteration loop reads it."""
         from multi_agent.cli import _run_ask
 
         config = _make_config()
         captured_contents = []
 
         def capture_run(coro):
-            # Read the temp file content during the "loop"
-            temp = tmp_path / ".multi_agent_ask.md"
-            if temp.exists():
-                captured_contents.append(temp.read_text())
+            answer_file = tmp_path / ".multi_agent_ask_answer.md"
+            if answer_file.exists():
+                captured_contents.append(answer_file.read_text())
             return type("R", (), {
                 "merged_texts": {},
                 "total_usage": TokenUsage(),

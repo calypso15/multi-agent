@@ -13,3 +13,5 @@ build/
 *.swp
 *.swo
 *~
+.multi_agent_ask_question.md
+.multi_agent_ask_answer.md
