@@ -219,6 +219,7 @@ def _run_iteration_and_present(
     command_prompt: str | None = None,
     command_propose_model: str | None = None,
     command_review_model: str | None = None,
+    command_propose_instructions: str | None = None,
     task_label: str | None = None,
 ) -> int:
     """Run the iteration loop and present results. Returns exit code."""
@@ -236,6 +237,7 @@ def _run_iteration_and_present(
         command_name=command_name, command_prompt=command_prompt,
         command_propose_model=command_propose_model,
         command_review_model=command_review_model,
+        command_propose_instructions=command_propose_instructions,
         on_progress=print_progress,
         on_phase=on_phase,
     ))
@@ -305,17 +307,21 @@ def _run_iteration_and_present(
         return 1 if hook_mode else 0
 
 
-def _review_common(
+def _prepare_command(
     ctx: click.Context,
-    files: tuple[str, ...],
     config_path: str | None,
-    hook_mode: bool,
-    dry_run: bool,
     max_rounds: int | None,
-    task_name: str | None,
+    command_name: str,
+    *,
+    task_name: str | None = None,
     prompt: str | None = None,
-) -> None:
-    """Shared implementation for review and TOML-defined commands."""
+):
+    """Load config, resolve command, and apply overrides.
+
+    Returns (config, repo_root, cmd_name, cmd_config) with agent filtering
+    and consensus_threshold already applied.  Every CLI command flows through
+    here so new commands inherit shared behaviour automatically.
+    """
     try:
         repo_root = _resolve_repo(ctx)
     except Exception:
@@ -333,32 +339,43 @@ def _review_common(
             general=dataclasses.replace(config.general, max_rounds=max_rounds),
         )
 
+    # Resolve which command to run.
     cmd_name, cmd_config = _resolve_task(task_name, config)
-
-    # Determine command.
     if cmd_name is None:
-        cmd_name = "review"
-        cmd_config = config.commands["review"]
-
-    task_label = cmd_name
+        cmd_name = command_name
+        cmd_config = config.commands[command_name]
 
     # --prompt: append or override user instructions
     if prompt:
         if task_name is None:
-            # No --task given: treat bare --prompt as a standalone command.
             cmd_name = "prompt"
             cmd_config = CommandConfig(prompt=prompt)
-            task_label = "prompt"
         else:
-            # Append user instructions to the command's prompt.
             cmd_config = dataclasses.replace(
                 cmd_config,
                 prompt=f"{cmd_config.prompt}\n\nAdditional instructions: {prompt}",
             )
 
-    command_prompt = cmd_config.prompt
-
     config = _apply_command_overrides(config, cmd_config)
+    return config, repo_root, cmd_name, cmd_config
+
+
+def _review_common(
+    ctx: click.Context,
+    files: tuple[str, ...],
+    config_path: str | None,
+    hook_mode: bool,
+    dry_run: bool,
+    max_rounds: int | None,
+    task_name: str | None,
+    prompt: str | None = None,
+) -> None:
+    """Shared implementation for review and TOML-defined commands."""
+    config, repo_root, cmd_name, cmd_config = _prepare_command(
+        ctx, config_path, max_rounds, "review",
+        task_name=task_name, prompt=prompt,
+    )
+    task_label = cmd_name
 
     from multi_agent.consensus import resolve_file_args
     from multi_agent.context import (
@@ -412,6 +429,7 @@ def _review_common(
         command_prompt=command_prompt,
         command_propose_model=cmd_config.propose_model,
         command_review_model=cmd_config.review_model,
+        command_propose_instructions=cmd_config.propose_instructions,
         task_label=task_label,
     )
     sys.exit(exit_code)
@@ -461,11 +479,8 @@ def _run_ask(
     config,
     repo_root: Path,
     question: str,
-    command_name: str = "ask",
-    command_prompt: str | None = None,
-    command_propose_model: str | None = None,
-    command_review_model: str | None = None,
-    task_label: str = "ask",
+    cmd_name: str,
+    cmd_config: CommandConfig,
 ) -> int:
     """Write question to two files, run consensus on the answer file, persist both."""
     from multi_agent.consensus import run_iteration_loop
@@ -488,13 +503,6 @@ def _run_ask(
     backend = _create_backend(config)
     on_phase = _make_phase_handler()
 
-    cmd_config = config.commands.get(command_name)
-    if cmd_config is None:
-        from multi_agent.config import DEFAULT_ASK_COMMAND
-        cmd_config = DEFAULT_ASK_COMMAND
-    config = _apply_command_overrides(config, cmd_config)
-    prompt_text = command_prompt or cmd_config.prompt
-
     question_name = ".multi_agent_ask_question.md"
     answer_name = ".multi_agent_ask_answer.md"
     question_path = repo_root / question_name
@@ -505,16 +513,17 @@ def _run_ask(
     answer_path.write_text(question)
 
     print_header(
-        [answer_name], len(ref), ref_size_kb, uncommitted, task=task_label,
+        [answer_name], len(ref), ref_size_kb, uncommitted, task=cmd_name,
     )
 
     result = asyncio.run(run_iteration_loop(
         config, str(repo_root), backend,
         target_files=[answer_name],
-        command_name=command_name,
-        command_prompt=prompt_text,
-        command_propose_model=command_propose_model or cmd_config.propose_model,
-        command_review_model=command_review_model or cmd_config.review_model,
+        command_name=cmd_name,
+        command_prompt=cmd_config.prompt,
+        command_propose_model=cmd_config.propose_model,
+        command_review_model=cmd_config.review_model,
+        command_propose_instructions=cmd_config.propose_instructions,
         on_progress=print_progress,
         on_phase=on_phase,
     ))
@@ -577,24 +586,11 @@ def ask(
     if not question_text.strip():
         raise click.BadParameter("Question cannot be empty.", param_hint="'QUESTION'")
 
-    try:
-        repo_root = _resolve_repo(ctx)
-    except Exception:
-        print_error("Not in a git repository.")
-        sys.exit(1)
-
-    config = load_config(
-        Path(config_path) if config_path else None,
-        search_from=repo_root,
+    config, repo_root, cmd_name, cmd_config = _prepare_command(
+        ctx, config_path, max_rounds, "ask",
     )
-    init_agent_styles(config.agents)
-    if max_rounds is not None:
-        config = dataclasses.replace(
-            config,
-            general=dataclasses.replace(config.general, max_rounds=max_rounds),
-        )
 
-    exit_code = _run_ask(config=config, repo_root=repo_root, question=question_text)
+    exit_code = _run_ask(config, repo_root, question_text, cmd_name, cmd_config)
     sys.exit(exit_code)
 
 

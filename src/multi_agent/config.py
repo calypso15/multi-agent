@@ -57,6 +57,7 @@ class CommandConfig:
     consensus_threshold: int | None = None
     propose_model: str | None = None
     review_model: str | None = None
+    propose_instructions: str | None = None
 
 
 # Default review command, used when absent from TOML.
@@ -72,11 +73,25 @@ DEFAULT_REVIEW_COMMAND = CommandConfig(
 DEFAULT_ASK_COMMAND = CommandConfig(
     description="Ask a question and get a consensus answer",
     prompt=(
-        "The file contains a question. Replace the ENTIRE content of the file "
-        "with a thorough, well-structured Markdown answer to the question. "
-        "Your answer should draw on your specialty expertise. Use the reference "
-        "files for context. The original_text should be the full file content "
-        "and the replacement_text should be your complete answer."
+        "The file contains a QUESTION, not content to review. "
+        "You MUST answer it by proposing exactly one edit that replaces the "
+        "entire file content with your answer.\n\n"
+        "Instructions:\n"
+        "1. Read the reference files to gather information relevant to the question.\n"
+        "2. Propose exactly ONE edit where original_text is the full file content "
+        "(the question) and replacement_text is your complete Markdown answer.\n"
+        "3. Set severity to \"major\".\n"
+        "4. You MUST always propose this edit. Never return an empty edits array. "
+        "The question always needs an answer."
+    ),
+    propose_instructions=(
+        "\n# YOUR TASK\n"
+        "The file above contains a QUESTION. You must ANSWER it.\n\n"
+        "Read the reference files to find relevant information, then propose "
+        "exactly one edit that replaces the entire file content (the question) "
+        "with your complete answer.\n\n"
+        "You MUST propose an edit. Do NOT return an empty edits array.\n\n"
+        "Return your response as JSON.\n"
     ),
 )
 
@@ -237,11 +252,25 @@ def load_config(
             f"got '{config.general.backend}'"
         )
 
-    # Insert default commands if missing.
-    if "review" not in config.commands:
-        config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
-    if "ask" not in config.commands:
-        config.commands["ask"] = dataclasses.replace(DEFAULT_ASK_COMMAND)
+    # Insert default commands if missing; merge TOML overrides on top of
+    # defaults for built-in commands so users only need to specify the fields
+    # they want to change.
+    for builtin_name, builtin_default in (
+        ("review", DEFAULT_REVIEW_COMMAND),
+        ("ask", DEFAULT_ASK_COMMAND),
+    ):
+        if builtin_name not in config.commands:
+            config.commands[builtin_name] = dataclasses.replace(builtin_default)
+        else:
+            merged = dataclasses.replace(builtin_default)
+            for fld in dataclasses.fields(CommandConfig):
+                val = getattr(config.commands[builtin_name], fld.name)
+                if val != fld.default and val != (
+                    fld.default_factory() if fld.default_factory is not dataclasses.MISSING  # type: ignore[comparison-overlap]
+                    else fld.default
+                ):
+                    setattr(merged, fld.name, val)
+            config.commands[builtin_name] = merged
 
     enabled_agents = {k for k, v in config.agents.items() if v.enabled}
     for name, cmd_cfg in config.commands.items():

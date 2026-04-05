@@ -357,12 +357,14 @@ async def run_propose_phase(
     command_name: str | None = None,
     command_prompt: str | None = None,
     command_propose_model: str | None = None,
+    command_propose_instructions: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> list[AgentProposal]:
     """Run all enabled agents in propose mode (sequentially)."""
     propose_prompt = build_propose_prompt(
         file_contents, reference, staged_diff,
         min_severity=config.general.min_severity,
+        propose_instructions=command_propose_instructions,
     )
 
     proposals: list[AgentProposal] = []
@@ -728,6 +730,7 @@ async def run_iteration_loop(
     command_prompt: str | None = None,
     command_propose_model: str | None = None,
     command_review_model: str | None = None,
+    command_propose_instructions: str | None = None,
     on_progress: Callable[[str, str], None] | None = None,
     on_phase: Callable[[PhaseEvent], None] | None = None,
 ) -> IterationResult:
@@ -785,6 +788,7 @@ async def run_iteration_loop(
         config, file_contents, reference, staged_diff, repo_root, backend,
         command_name=command_name, command_prompt=command_prompt,
         command_propose_model=command_propose_model,
+        command_propose_instructions=command_propose_instructions,
         on_progress=on_progress,
     )
     for p in proposals:

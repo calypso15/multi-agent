@@ -55,7 +55,7 @@ class TestDefaultAskCommand:
         config = load_config(path=p)
         assert "ask" in config.commands
 
-    def test_toml_ask_command_not_overridden(self, tmp_path):
+    def test_toml_ask_command_prompt_overrides_default(self, tmp_path):
         toml = (
             '[agents.alpha]\nsystem_prompt = "A"\n'
             '[agents.beta]\nsystem_prompt = "B"\n'
@@ -66,15 +66,42 @@ class TestDefaultAskCommand:
         config = load_config(path=p)
         assert config.commands["ask"].prompt == "Custom ask prompt."
 
+    def test_toml_ask_merges_on_top_of_defaults(self, tmp_path):
+        """Partial [commands.ask] inherits prompt/propose_instructions from default."""
+        toml = (
+            '[agents.alpha]\nsystem_prompt = "A"\n'
+            '[agents.beta]\nsystem_prompt = "B"\n'
+            '[commands.ask]\n'
+            'review_model = "claude-haiku-4-5-20251001"\n'
+            'agents = ["alpha"]\n'
+        )
+        p = tmp_path / "multi_agent.toml"
+        p.write_text(toml)
+        config = load_config(path=p)
+        ask = config.commands["ask"]
+        # TOML overrides applied
+        assert ask.review_model == "claude-haiku-4-5-20251001"
+        assert ask.agents == ["alpha"]
+        # Defaults inherited
+        from multi_agent.config import DEFAULT_ASK_COMMAND
+        assert ask.prompt == DEFAULT_ASK_COMMAND.prompt
+        assert ask.propose_instructions == DEFAULT_ASK_COMMAND.propose_instructions
+
 
 # --- _run_ask ---
 
 
+from multi_agent.config import DEFAULT_ASK_COMMAND
+
+
 class TestRunAsk:
+    def _call(self, config, repo_root, question):
+        """Call _run_ask with the default ask command config."""
+        from multi_agent.cli import _run_ask
+        return _run_ask(config, repo_root, question, "ask", DEFAULT_ASK_COMMAND)
+
     def test_question_and_answer_files_persist(self, tmp_path):
         """Both question and answer files remain after a successful run."""
-        from multi_agent.cli import _run_ask
-
         config = _make_config()
 
         mock_result = type("R", (), {
@@ -98,7 +125,7 @@ class TestRunAsk:
              patch("multi_agent.cli.print_token_usage"):
             mock_asyncio.run.return_value = mock_result
 
-            _run_ask(config=config, repo_root=tmp_path, question="What is X?")
+            self._call(config, tmp_path, "What is X?")
 
         assert (tmp_path / ".multi_agent_ask_question.md").exists()
         assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
@@ -107,8 +134,6 @@ class TestRunAsk:
 
     def test_answer_file_written_with_merged_text(self, tmp_path):
         """The answer file on disk contains the consensus answer, not the question."""
-        from multi_agent.cli import _run_ask
-
         config = _make_config()
 
         mock_result = type("R", (), {
@@ -132,17 +157,13 @@ class TestRunAsk:
              patch("multi_agent.cli.print_token_usage"):
             mock_asyncio.run.return_value = mock_result
 
-            exit_code = _run_ask(
-                config=config, repo_root=tmp_path, question="What is the answer?",
-            )
+            exit_code = self._call(config, tmp_path, "What is the answer?")
 
         assert exit_code == 0
         mock_print_answer.assert_called_once_with("The answer is 42.")
 
     def test_no_edits_leaves_question_in_both_files(self, tmp_path):
         """When agents propose no edits, question file persists, answer has question."""
-        from multi_agent.cli import _run_ask
-
         config = _make_config()
 
         with patch("multi_agent.cli._create_backend"), \
@@ -159,7 +180,7 @@ class TestRunAsk:
             })()
             mock_asyncio.run.return_value = mock_result
 
-            _run_ask(config=config, repo_root=tmp_path, question="What is X?")
+            self._call(config, tmp_path, "What is X?")
 
         assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
         # Answer file still has the question (no edits were applied)
@@ -167,8 +188,6 @@ class TestRunAsk:
 
     def test_question_written_to_answer_file_before_loop(self, tmp_path):
         """The question is in the answer file when the iteration loop reads it."""
-        from multi_agent.cli import _run_ask
-
         config = _make_config()
         captured_contents = []
 
@@ -191,7 +210,7 @@ class TestRunAsk:
              patch("multi_agent.cli.print_token_usage"):
             mock_asyncio.run.side_effect = capture_run
 
-            _run_ask(config=config, repo_root=tmp_path, question="My question?")
+            self._call(config, tmp_path, "My question?")
 
         assert captured_contents == ["My question?"]
 

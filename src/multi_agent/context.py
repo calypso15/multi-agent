@@ -215,12 +215,16 @@ def build_propose_prompt(
     reference: dict[str, str],
     staged_diff: str | None = None,
     min_severity: str = "minor",
+    propose_instructions: str | None = None,
 ) -> str:
     """Assemble the prompt for the propose phase."""
     parts: list[str] = [_reference_section(reference)]
 
-    parts.append("\n# FILES FOR REVIEW\n")
-    parts.append("These are the files to review and propose edits for.\n")
+    if propose_instructions:
+        parts.append("\n# FILES\n")
+    else:
+        parts.append("\n# FILES FOR REVIEW\n")
+        parts.append("These are the files to review and propose edits for.\n")
     for path, content in sorted(file_contents.items()):
         parts.append(f"\n## {path}\n```\n{content}\n```\n")
 
@@ -228,7 +232,7 @@ def build_propose_prompt(
         parts.append("\n# DIFF (changes being made)\n")
         parts.append(f"```diff\n{staged_diff}\n```\n")
 
-    parts.append(_propose_instructions(min_severity))
+    parts.append(propose_instructions or _propose_instructions(min_severity))
     return "".join(parts)
 
 
