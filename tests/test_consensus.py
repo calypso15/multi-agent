@@ -25,8 +25,8 @@ from multi_agent.arbitration import (
 )
 from multi_agent.consensus import (
     _last_modifiers,
+    _run_single_edit_review,
     _run_single_proposer,
-    _run_single_reviewer,
     run_iteration_loop,
     run_propose_phase,
     run_review_phase,
@@ -298,35 +298,43 @@ class TestRunSingleProposer:
         assert result.edits == []
 
 
-class TestRunSingleReviewer:
-    async def test_successful_review(self):
+class TestRunSingleEditReview:
+    async def test_approve(self):
         backend = _make_mock_backend(return_value=_make_agent_result(
-            output={
-                "all_approved": False,
-                "summary": "Needs changes.",
-                "proposal_reviews": [
-                    {"original_agent": "alpha", "edit_index": 0,
-                     "verdict": "MODIFY", "modified_replacement": "better",
-                     "rationale": "improvement"},
-                ],
-            },
+            output={"verdict": "APPROVE", "rationale": "Looks good."},
         ))
-        result = await _run_single_reviewer(
+        pr, raw = await _run_single_edit_review(
             "beta", "prompt", backend, "system prompt", "/repo", 60,
-            round_number=0,
+            original_agent="alpha", edit_index=0,
         )
-        assert result.agent_name == "beta"
-        assert not result.all_approved
-        assert len(result.proposal_reviews) == 1
+        assert pr is not None
+        assert pr.verdict == "APPROVE"
+        assert pr.original_agent == "alpha"
+        assert pr.edit_index == 0
 
-    async def test_error_doesnt_block(self):
-        backend = _make_mock_backend(return_value=_make_agent_result(error="crash"))
-        result = await _run_single_reviewer(
+    async def test_modify(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(
+            output={"verdict": "MODIFY", "modified_replacement": "better",
+                     "rationale": "improvement"},
+        ))
+        pr, raw = await _run_single_edit_review(
             "beta", "prompt", backend, "system prompt", "/repo", 60,
-            round_number=0,
+            original_agent="alpha", edit_index=2,
         )
-        assert result.all_approved is True
-        assert result.error == "crash"
+        assert pr is not None
+        assert pr.verdict == "MODIFY"
+        assert pr.modified_replacement == "better"
+        assert pr.original_agent == "alpha"
+        assert pr.edit_index == 2
+
+    async def test_error_returns_none(self):
+        backend = _make_mock_backend(return_value=_make_agent_result(error="crash"))
+        pr, raw = await _run_single_edit_review(
+            "beta", "prompt", backend, "system prompt", "/repo", 60,
+            original_agent="alpha", edit_index=0,
+        )
+        assert pr is None
+        assert raw.error == "crash"
 
 
 def _make_config(agents=None):

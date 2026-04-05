@@ -2,7 +2,7 @@
 
 from multi_agent.agents import (
     DISSENT_MODE_SUFFIX,
-    REVIEW_MODE_SUFFIX,
+    EDIT_REVIEW_MODE_SUFFIX,
     build_agent_system_prompt,
     build_command_mode_suffix,
     build_name_normalizer,
@@ -45,6 +45,17 @@ class TestBuildNameNormalizer:
         normalize = build_name_normalizer(two_agent_config)
         assert normalize("unknown_agent") == "unknown_agent"
 
+    def test_parenthetical_suffix_stripped(self):
+        agents = {"sociopolitical": AgentConfig(system_prompt="Politics.")}
+        normalize = build_name_normalizer(agents)
+        assert normalize("Sociopolitical (politics)") == "sociopolitical"
+        assert normalize("sociopolitical (review)") == "sociopolitical"
+
+    def test_parenthetical_on_display_name(self):
+        agents = {"sci": AgentConfig(system_prompt="S.", display_name="Scientific Rigor")}
+        normalize = build_name_normalizer(agents)
+        assert normalize("Scientific Rigor (accuracy)") == "sci"
+
 
 # --- build_command_mode_suffix ---
 
@@ -79,7 +90,7 @@ class TestBuildAgentSystemPrompt:
 
     def test_review_mode_appends_review_suffix(self):
         result = build_agent_system_prompt("alpha", "review", "Base prompt.")
-        assert result == "Base prompt." + REVIEW_MODE_SUFFIX
+        assert result == "Base prompt." + EDIT_REVIEW_MODE_SUFFIX
 
     def test_dissent_mode_appends_dissent_suffix(self):
         result = build_agent_system_prompt("alpha", "dissent", "Base prompt.")

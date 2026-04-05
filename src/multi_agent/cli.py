@@ -21,17 +21,18 @@ from multi_agent.output import (
     print_arbitration_done,
     print_arbitration_start,
     print_changes_applied,
-    print_confirmation_prompt,
     print_dissents,
     print_error,
     print_final_diff,
     print_header,
     print_iteration_exhausted,
     print_iteration_success,
+    print_edit_list,
     print_no_edits,
     print_no_files,
     print_progress,
     print_proposal_details,
+    prompt_edit_selection,
     print_propose_start,
     print_proposals_summary,
     print_resolved_config,
@@ -333,19 +334,63 @@ def _run_iteration_and_present(
         )
         return 1
 
-    if print_confirmation_prompt():
-        modified = apply_merged_texts(repo_root, result.merged_texts)
-        print_changes_applied(modified)
-        if hook_mode:
-            console.print(
-                "[yellow]Changes applied to working tree. "
-                "Review the modifications, stage them, and commit again.[/yellow]"
-            )
-            return 1  # exit 1 so the current commit is aborted
-        return 0
-    else:
+    # Build numbered edit list for per-edit selection
+    from multi_agent.config import get_display_name
+    numbered_edits: list[tuple[int, str, object]] = []
+    edit_owners: list[tuple[str, int]] = []  # (agent_name, edit_index_in_proposal)
+    num = 1
+    for proposal in result.proposals:
+        display = get_display_name(proposal.agent_name,
+                                    resolved.agents[proposal.agent_name])
+        for i, edit in enumerate(proposal.edits):
+            numbered_edits.append((num, display, edit))
+            edit_owners.append((proposal.agent_name, i))
+            num += 1
+
+    print_edit_list(numbered_edits)
+    selected = prompt_edit_selection(len(numbered_edits))
+
+    if not selected:
         console.print("[dim]Changes not applied.[/dim]")
         return 1 if hook_mode else 0
+
+    # If user selected a subset, filter proposals and re-merge
+    texts_to_apply = result.merged_texts
+    if selected != set(range(1, len(numbered_edits) + 1)):
+        from multi_agent.merge import merge_agent_edits
+        selected_keys = {edit_owners[n - 1] for n in selected}
+        filtered = [
+            dataclasses.replace(proposal, edits=[
+                edit for i, edit in enumerate(proposal.edits)
+                if (proposal.agent_name, i) in selected_keys
+            ])
+            for proposal in result.proposals
+        ]
+        re_merged = merge_agent_edits(file_contents, filtered)
+        texts_to_apply = re_merged.merged_texts
+
+        if not texts_to_apply:
+            console.print("[dim]No changes to apply after filtering.[/dim]")
+            return 0
+
+        # Show updated diff
+        new_diff = build_diff_preview_from_merged(texts_to_apply, file_contents)
+        if new_diff:
+            console.print(
+                f"\n  [bold cyan]Applying {len(selected)}/{len(numbered_edits)}"
+                f" edit(s)[/bold cyan]"
+            )
+            print_final_diff(new_diff)
+
+    modified = apply_merged_texts(repo_root, texts_to_apply)
+    print_changes_applied(modified)
+    if hook_mode:
+        console.print(
+            "[yellow]Changes applied to working tree. "
+            "Review the modifications, stage them, and commit again.[/yellow]"
+        )
+        return 1  # exit 1 so the current commit is aborted
+    return 0
 
 
 def _prepare_command(

@@ -28,7 +28,18 @@ def build_name_normalizer(
         lookup[key.replace("_", " ")] = key
 
     def normalize(name: str) -> str:
-        return lookup.get(name, lookup.get(name.lower(), name))
+        # Exact match first
+        result = lookup.get(name) or lookup.get(name.lower())
+        if result:
+            return result
+        # Strip parenthetical suffixes LLMs sometimes add, e.g.
+        # "Sociopolitical (politics)" → "Sociopolitical"
+        stripped = name.split("(")[0].strip() if "(" in name else name
+        if stripped != name:
+            result = lookup.get(stripped) or lookup.get(stripped.lower())
+            if result:
+                return result
+        return name
 
     return normalize
 
@@ -82,51 +93,25 @@ PROPOSAL_OUTPUT_FORMAT = json.dumps({
     },
 })
 
-REVIEW_RESPONSE_FORMAT = json.dumps({
+EDIT_REVIEW_RESPONSE_FORMAT = json.dumps({
     "type": "json_schema",
     "schema": {
         "type": "object",
         "properties": {
-            "all_approved": {
-                "type": "boolean",
-                "description": "True if you approve ALL proposals as-is with no modifications.",
-            },
-            "summary": {
+            "verdict": {
                 "type": "string",
-                "description": "Summary of your review of the proposals.",
+                "enum": ["APPROVE", "MODIFY"],
             },
-            "proposal_reviews": {
-                "type": "array",
-                "description": "Per-edit feedback. Include entries ONLY for edits you want to MODIFY.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "original_agent": {
-                            "type": "string",
-                            "description": "Name of the agent whose proposal you are reviewing.",
-                        },
-                        "edit_index": {
-                            "type": "integer",
-                            "description": "Zero-based index of the edit within that agent's proposal.",
-                        },
-                        "verdict": {
-                            "type": "string",
-                            "enum": ["APPROVE", "MODIFY"],
-                        },
-                        "modified_replacement": {
-                            "type": "string",
-                            "description": "Your revised replacement_text. Required if verdict is MODIFY.",
-                        },
-                        "rationale": {
-                            "type": "string",
-                            "description": "Why you are modifying this proposal.",
-                        },
-                    },
-                    "required": ["original_agent", "edit_index", "verdict", "rationale"],
-                },
+            "modified_replacement": {
+                "type": "string",
+                "description": "Your revised replacement_text. Required if verdict is MODIFY.",
+            },
+            "rationale": {
+                "type": "string",
+                "description": "Why you approve or are modifying this edit.",
             },
         },
-        "required": ["all_approved", "summary", "proposal_reviews"],
+        "required": ["verdict", "rationale"],
     },
 })
 
@@ -165,19 +150,19 @@ Return your response as JSON matching this schema:
   - "severity": "critical", "major", "minor", or "suggestion"
 """
 
-REVIEW_MODE_SUFFIX = """\
+EDIT_REVIEW_MODE_SUFFIX = """\
 
 
-# YOUR TASK MODE: REVIEW PROPOSALS
+# YOUR TASK MODE: REVIEW A PROPOSED EDIT
 
-You are in REVIEW mode. Other specialist agents have proposed edits to the \
-content. Review ALL proposals and decide whether each is acceptable.
+You are in REVIEW mode. Another specialist agent has proposed an edit to the \
+content. Decide whether the edit is acceptable or needs modification.
 
-IMPORTANT: The files under review are drafts being improved — they are NOT \
+IMPORTANT: The file under review is a draft being improved — it is NOT \
 authoritative. Only files in the reference directories are authoritative. \
-Do not reject edits solely because they change terminology, facts, or \
+Do not reject the edit solely because it changes terminology, facts, or \
 descriptions established in the file under review. Changing those is often \
-the point of the edit. Judge edits against the REFERENCE FILES, not against \
+the point of the edit. Judge the edit against the REFERENCE FILES, not against \
 the current draft text.
 
 Consider from YOUR specialty perspective:
@@ -186,25 +171,16 @@ Consider from YOUR specialty perspective:
 - Is the edit consistent with established reference files?
 - Can the edit be improved while preserving the original intent?
 
-If ALL proposals are acceptable as-is, set "all_approved" to true and leave \
-"proposal_reviews" empty.
+If the edit is acceptable as-is, set "verdict" to "APPROVE".
 
-If any proposal needs modification, set "all_approved" to false and include a \
-"proposal_reviews" entry for EACH edit you want to change. For edits you accept, \
-you do not need to include them.
+If the edit needs modification, set "verdict" to "MODIFY" and provide a \
+"modified_replacement" that preserves the original proposer's intent while \
+fixing the issue you identified.
 
-When modifying, provide a "modified_replacement" that preserves the original \
-proposer's intent while fixing the issue you identified.
-
-Return your response as JSON matching this schema:
-- "all_approved": boolean
-- "summary": summary of your review
-- "proposal_reviews": array (only for edits you want to MODIFY) with:
-  - "original_agent": name of the proposing agent
-  - "edit_index": zero-based index of the edit in that agent's proposal
-  - "verdict": "APPROVE" or "MODIFY"
-  - "modified_replacement": your revised replacement text (required for MODIFY)
-  - "rationale": why you are modifying
+Return your response as JSON:
+- "verdict": "APPROVE" or "MODIFY"
+- "modified_replacement": your revised replacement text (required for MODIFY)
+- "rationale": why you approve or are modifying
 """
 
 
@@ -270,7 +246,7 @@ ARBITRATOR_OUTPUT_FORMAT = json.dumps({
 })
 
 _INTERNAL_MODE_SUFFIXES: dict[str, str] = {
-    "review": REVIEW_MODE_SUFFIX,
+    "review": EDIT_REVIEW_MODE_SUFFIX,
     "dissent": DISSENT_MODE_SUFFIX,
 }
 

@@ -7,10 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from multi_agent.agents import (
-    build_agent_system_prompt,
-    build_name_normalizer,
-)
+from multi_agent.agents import build_agent_system_prompt
 from multi_agent.arbitration import (
     build_dissent_prompt,
     collect_dissents,
@@ -24,9 +21,10 @@ from multi_agent.config import (
     ResolvedRunConfig,
     get_display_name,
 )
+from multi_agent.backend import AgentResult
 from multi_agent.context import (
+    build_edit_review_prompt,
     build_propose_prompt,
-    build_review_round_prompt,
     get_staged_content,
     get_staged_diff,
     get_staged_files,
@@ -42,6 +40,7 @@ from multi_agent.models import (
     DissentsDone,
     FileEdit,
     IterationResult,
+    ProposalReview,
     IterationRound,
     PhaseEvent,
     ProposeDone,
@@ -52,7 +51,6 @@ from multi_agent.models import (
     count_blocking_approvals,
     filter_edits_by_severity,
     parse_edits,
-    parse_proposal_reviews,
 )
 
 # --- Edit validation and deduplication ---
@@ -218,55 +216,42 @@ async def _run_single_proposer(
     )
 
 
-async def _run_single_reviewer(
+async def _run_single_edit_review(
     agent_name: str,
     review_prompt: str,
     backend: AgentBackend,
     system_prompt: str,
     repo_root: str,
     timeout_seconds: int,
-    round_number: int,
-    on_progress: Callable[[str, str], None] | None = None,
-    normalizer: Callable[[str], str] | None = None,
+    *,
+    original_agent: str,
+    edit_index: int,
     model: str | None = None,
     max_turns: int = 0,
-) -> AgentReviewResponse:
-    """Run a single agent in review mode."""
-    model_tag = f" ({model})" if model else ""
+) -> tuple[ProposalReview | None, AgentResult]:
+    """Review a single edit. Returns (review, raw_result).
+
+    Returns (None, raw_result) on error so the caller can aggregate usage.
+    """
     raw = await backend.run_agent(
         agent_name, review_prompt, system_prompt, repo_root,
         timeout_seconds, model=model, max_turns=max_turns,
-        on_progress=on_progress,
-        progress_label=f"reviewing{model_tag} (round {round_number + 1})",
+        progress_label="reviewing", report_tool_use=False,
     )
     if raw.error:
-        return AgentReviewResponse(
-            agent_name=agent_name, all_approved=True,  # failed agent doesn't block
-            proposal_reviews=[], summary="Agent failed.",
-            error=raw.error, duration_seconds=raw.duration_seconds, usage=raw.usage,
-            turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
-        )
+        return None, raw
 
-    all_approved = raw.output.get("all_approved", True)
-    proposal_reviews = parse_proposal_reviews(
-        raw.output.get("proposal_reviews", []),
-        normalizer=normalizer or (lambda x: x),
-    )
+    verdict = raw.output.get("verdict", "APPROVE")
+    modified_replacement = raw.output.get("modified_replacement")
+    rationale = raw.output.get("rationale", "")
 
-    if on_progress:
-        if all_approved:
-            on_progress(agent_name, f"done \u2014 approved all (round {round_number + 1})")
-        else:
-            mod_count = sum(1 for r in proposal_reviews if r.verdict == "MODIFY")
-            on_progress(agent_name, f"done \u2014 modified {mod_count} (round {round_number + 1})")
-
-    return AgentReviewResponse(
-        agent_name=agent_name, all_approved=all_approved,
-        proposal_reviews=proposal_reviews,
-        summary=raw.output.get("summary", ""),
-        duration_seconds=raw.duration_seconds, usage=raw.usage,
-        turns_taken=raw.turns_taken, tool_usage=raw.tool_usage,
-    )
+    return ProposalReview(
+        original_agent=original_agent,
+        edit_index=edit_index,
+        verdict=verdict,
+        modified_replacement=modified_replacement if verdict == "MODIFY" else None,
+        rationale=rationale,
+    ), raw
 
 
 # --- Phase runners ---
@@ -344,40 +329,40 @@ async def run_review_phase(
     on_progress: Callable[[str, str], None] | None = None,
     previous_reviews: list[AgentReviewResponse] | None = None,
     display_names: dict[str, str] | None = None,
-    normalizer: Callable[[str], str] | None = None,
 ) -> list[AgentReviewResponse]:
-    """Run all enabled agents in review mode (sequentially).
+    """Run per-edit reviews for all agents (sequentially).
 
-    Each agent only reviews proposals from OTHER agents -- not its own.
-    Additionally, edits an agent last modified in the previous round are
-    excluded from their review prompt (they already approved their version).
+    Each agent reviews each edit from OTHER agents individually. Edits
+    an agent last modified in the previous round are skipped.
     """
-    reviews: list[AgentReviewResponse] = []
+    _display_names = display_names or {}
 
-    # Pre-compute which edits each agent last modified so they can be
-    # skipped in the prompt (without removing them, which would shift
-    # indices and break merge_proposals).
+    # Pre-compute which edits each agent last modified.
     last_mods = _last_modifiers(previous_reviews) if previous_reviews else {}
+
+    reviews: list[AgentReviewResponse] = []
 
     for name, agent_cfg in resolved.agents.items():
         if not agent_cfg.enabled:
             continue
         settings = resolved.agent_settings[name]
-        other_proposals = [p for p in proposals if p.agent_name != name]
 
-        # Build skip set: edits this agent last modified
+        # Edits this agent should skip (own proposals + last modified)
         skip_edits = {
             key for key, modifier in last_mods.items()
             if modifier == name
         }
 
-        # Check if any visible edits remain
-        has_visible = any(
-            (p.agent_name, i) not in skip_edits
-            for p in other_proposals
-            for i in range(len(p.edits))
-        )
-        if not has_visible:
+        # Collect edits to review (from other agents, not skipped)
+        edits_to_review: list[tuple[str, int, FileEdit]] = []
+        for p in proposals:
+            if p.agent_name == name:
+                continue
+            for i, edit in enumerate(p.edits):
+                if (p.agent_name, i) not in skip_edits:
+                    edits_to_review.append((p.agent_name, i, edit))
+
+        if not edits_to_review:
             reviews.append(AgentReviewResponse(
                 agent_name=name,
                 all_approved=True,
@@ -386,21 +371,73 @@ async def run_review_phase(
             ))
             continue
 
-        review_prompt = build_review_round_prompt(
-            other_proposals, file_contents, reference, round_number,
-            display_names=display_names,
-            skip_edits=skip_edits,
-        )
         system_prompt = build_agent_system_prompt(
             name, "review", agent_cfg.system_prompt,
             max_turns=settings.review_max_turns,
         )
-        reviews.append(await _run_single_reviewer(
-            name, review_prompt, backend, system_prompt, repo_root,
-            settings.timeout_seconds, round_number, on_progress,
-            normalizer=normalizer,
-            model=settings.review_model,
-            max_turns=settings.review_max_turns,
+
+        if on_progress:
+            model_tag = f" ({settings.review_model})" if settings.review_model else ""
+            on_progress(
+                name,
+                f"reviewing{model_tag} {len(edits_to_review)} edit(s) "
+                f"(round {round_number + 1})",
+            )
+
+        # Review each edit individually
+        proposal_reviews: list[ProposalReview] = []
+        total_usage = TokenUsage()
+        total_duration = 0.0
+        total_turns = 0
+        tool_usage: dict[str, int] = {}
+        error: str | None = None
+
+        for orig_agent, edit_idx, edit in edits_to_review:
+            proposer_display = _display_names.get(orig_agent, orig_agent)
+            review_prompt = build_edit_review_prompt(
+                edit, proposer_display, file_contents, reference,
+                round_number,
+            )
+            pr, raw = await _run_single_edit_review(
+                name, review_prompt, backend, system_prompt, repo_root,
+                settings.timeout_seconds,
+                original_agent=orig_agent,
+                edit_index=edit_idx,
+                model=settings.review_model,
+                max_turns=settings.review_max_turns,
+            )
+            total_usage += raw.usage
+            total_duration += raw.duration_seconds
+            total_turns += raw.turns_taken
+            for t, c in raw.tool_usage.items():
+                tool_usage[t] = tool_usage.get(t, 0) + c
+
+            if raw.error:
+                error = raw.error
+                continue
+
+            if pr and pr.verdict == "MODIFY":
+                proposal_reviews.append(pr)
+
+        all_approved = len(proposal_reviews) == 0 and error is None
+
+        if on_progress:
+            if all_approved:
+                on_progress(name, f"done \u2014 approved all (round {round_number + 1})")
+            else:
+                mod_count = len(proposal_reviews)
+                on_progress(name, f"done \u2014 modified {mod_count} (round {round_number + 1})")
+
+        reviews.append(AgentReviewResponse(
+            agent_name=name,
+            all_approved=all_approved,
+            proposal_reviews=proposal_reviews,
+            summary="",
+            duration_seconds=total_duration,
+            error=error,
+            usage=total_usage,
+            turns_taken=total_turns,
+            tool_usage=tool_usage,
         ))
 
     return reviews
@@ -426,7 +463,6 @@ async def run_iteration_loop(
     root = Path(repo_root)
     start = time.monotonic()
 
-    normalizer = build_name_normalizer(resolved.agents)
     display_names = {k: get_display_name(k, v) for k, v in resolved.agents.items()}
 
     # Use the first agent's file_patterns for staged file resolution
@@ -547,7 +583,6 @@ async def run_iteration_loop(
             repo_root, round_num, backend, on_progress,
             previous_reviews=previous_reviews,
             display_names=display_names,
-            normalizer=normalizer,
         )
         for r in reviews:
             total_usage += r.usage

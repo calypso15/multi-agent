@@ -390,6 +390,56 @@ def print_final_diff(diff_text: str) -> None:
     console.print(syntax)
 
 
+def print_edit_list(
+    numbered_edits: list[tuple[int, str, "FileEdit"]],
+) -> None:
+    """Print a numbered list of edits for selection.
+
+    numbered_edits: list of (1-based index, agent_display_name, FileEdit).
+    """
+    console.print()
+    for num, agent_display, edit in numbered_edits:
+        console.print(
+            f"  [bold]{num}.[/bold] [{edit.severity}] "
+            f"[dim]{edit.file}[/dim] — {edit.rationale[:80]}"
+            f"  [dim]({agent_display})[/dim]"
+        )
+
+
+def prompt_edit_selection(total: int) -> set[int] | None:
+    """Prompt the user to select which edits to apply.
+
+    Returns a set of 1-based edit indices, or None to reject all.
+    Returns the full set {1..total} for "all".
+    """
+    console.print()
+    if not sys.stdin.isatty():
+        console.print("[dim]No TTY available — skipping confirmation.[/dim]")
+        return None
+    try:
+        response = console.input(
+            "[bold]Apply: \\[a]ll, \\[n]one, or edit numbers (e.g. 1,3): [/bold]"
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if response in ("a", "all", "y", "yes"):
+        return set(range(1, total + 1))
+    if response in ("n", "none", "no", ""):
+        return None
+
+    # Parse comma/space-separated numbers
+    selected: set[int] = set()
+    for part in response.replace(",", " ").split():
+        try:
+            num = int(part)
+            if 1 <= num <= total:
+                selected.add(num)
+        except ValueError:
+            continue
+    return selected if selected else None
+
+
 def print_confirmation_prompt() -> bool:
     """Ask the user whether to apply changes. Returns True if confirmed."""
     console.print()

@@ -306,6 +306,40 @@ def build_review_round_prompt(
     return "".join(parts)
 
 
+_EDIT_REVIEW_INSTRUCTIONS = (
+    "\n# YOUR TASK\n"
+    "Review the proposed edit above from your specialty perspective. "
+    "Decide whether it is acceptable or needs modification.\n\n"
+    "Use the Read tool to examine any reference files relevant to your review.\n\n"
+    "Return your response as JSON.\n"
+)
+
+
+def build_edit_review_prompt(
+    edit: FileEdit,
+    proposer_display: str,
+    file_contents: dict[str, str],
+    reference: dict[str, str],
+    round_number: int,
+) -> str:
+    """Assemble the prompt for reviewing a single edit."""
+    parts: list[str] = [_reference_section(reference)]
+
+    parts.append("\n# FILE UNDER REVIEW (draft being improved — not authoritative)\n")
+    content = file_contents.get(edit.file, "")
+    parts.append(f"\n## {edit.file}\n```\n{content}\n```\n")
+
+    parts.append(f"\n# PROPOSED EDIT TO REVIEW (Round {round_number + 1})\n")
+    parts.append(f"Proposed by: {proposer_display}\n")
+    parts.append(f"Severity: {edit.severity}\n")
+    parts.append(f"Rationale: {edit.rationale}\n")
+    parts.append(f"\n**Original text:**\n```\n{edit.original_text}\n```\n")
+    parts.append(f"**Replacement:**\n```\n{edit.replacement_text}\n```\n")
+
+    parts.append(_EDIT_REVIEW_INSTRUCTIONS)
+    return "".join(parts)
+
+
 def _build_unified_diff(
     filepath: str,
     original: str,
