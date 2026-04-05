@@ -224,11 +224,14 @@ async def _drive_process(
         elif event_type == "stream_event":
             inner = event.get("event", {})
             inner_type = inner.get("type", "")
-            if inner_type == "message_stop":
-                # A complete turn boundary — one message_stop per turn.
+            if inner_type == "message_start":
+                # Report the turn before its content streams.
                 turns += 1
                 if on_turn:
                     on_turn(turns)
+            elif inner_type == "message_stop":
+                # Enforce the limit after the turn completes so we
+                # don't interrupt mid-turn.
                 if max_turns > 0 and turns >= max_turns:
                     raise _MaxTurnsExceeded()
             elif inner_type == "content_block_start":
