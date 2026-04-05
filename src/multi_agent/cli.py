@@ -63,7 +63,6 @@ class ConfigGroup(click.Group):
     @staticmethod
     def _repo_from_argv() -> str | None:
         """Extract --repo value from sys.argv as a fallback."""
-        import sys
         args = sys.argv[1:]
         for i, arg in enumerate(args):
             if arg == "--repo" and i + 1 < len(args):
@@ -159,12 +158,14 @@ def _resolve_task(
 
 
 def _create_backend(resolved):
-    """Create the agent backend from resolved config."""
-    from multi_agent.backend import AgentBackend  # noqa: F401
-
+    """Create the agent backend and validate tool configuration."""
     if resolved.backend == "claude-cli":
         from multi_agent.claude_runner import ClaudeCliBackend
-        return ClaudeCliBackend()
+        backend = ClaudeCliBackend()
+        for name, settings in resolved.agent_settings.items():
+            if settings.allowed_tools:
+                backend.validate_tools(name, settings.allowed_tools)
+        return backend
     raise ValueError(f"Unknown backend: {resolved.backend}")
 
 
@@ -215,6 +216,46 @@ def _make_phase_handler(resolved=None):
     return on_phase
 
 
+def _load_reference_context(repo_root: Path, settings):
+    """Load reference files and return (reference, ref_size_kb, uncommitted_count)."""
+    from multi_agent.context import count_uncommitted_reference, load_reference
+
+    ref = load_reference(
+        repo_root,
+        settings.reference_directories,
+        settings.file_patterns,
+        settings.max_reference_size_kb,
+    )
+    ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
+    uncommitted = count_uncommitted_reference(
+        repo_root,
+        settings.reference_directories,
+        settings.file_patterns,
+        set(ref.keys()),
+    )
+    return ref, ref_size_kb, uncommitted
+
+
+def _print_consensus_status(result, resolved) -> None:
+    """Print consensus-reached or exhausted status from an IterationResult."""
+    if result.consensus_reached:
+        last_round = result.rounds[-1] if result.rounds else None
+        if last_round:
+            print_iteration_success(last_round.approvals, len(last_round.reviews))
+        else:
+            print_iteration_success(0, 0)
+    else:
+        total = len(result.rounds[-1].reviews) if result.rounds else 0
+        print_iteration_exhausted(
+            rounds_run=len(result.rounds),
+            max_rounds=resolved.max_rounds,
+            approvals=result.best_approvals,
+            total=total,
+            best_round=result.best_round,
+            stalled=result.stalled,
+        )
+
+
 def _run_iteration_and_present(
     resolved,
     repo_root: Path,
@@ -260,23 +301,7 @@ def _run_iteration_and_present(
 
     diff_text = build_diff_preview_from_merged(result.merged_texts, file_contents)
 
-    # Consensus status
-    if result.consensus_reached:
-        last_round = result.rounds[-1] if result.rounds else None
-        if last_round:
-            print_iteration_success(last_round.approvals, len(last_round.reviews))
-        else:
-            print_iteration_success(0, 0)
-    else:
-        total = len(result.rounds[-1].reviews) if result.rounds else 0
-        print_iteration_exhausted(
-            rounds_run=len(result.rounds),
-            max_rounds=resolved.max_rounds,
-            approvals=result.best_approvals,
-            total=total,
-            best_round=result.best_round,
-            stalled=result.stalled,
-        )
+    _print_consensus_status(result, resolved)
 
     # Show diff
     print_final_diff(diff_text)
@@ -378,12 +403,7 @@ def _review_common(
         task_name=task_name, prompt=prompt,
     )
 
-    from multi_agent.consensus import resolve_file_args
-    from multi_agent.context import (
-        count_uncommitted_reference,
-        get_staged_files,
-        load_reference,
-    )
+    from multi_agent.context import get_staged_files, resolve_file_args
 
     # Use the first agent's file_patterns for file resolution
     first_settings = next(iter(resolved.agent_settings.values()))
@@ -407,19 +427,7 @@ def _review_common(
         target_files = None  # signals: use staged files
         files_display = [str(f) for f in staged]
 
-    ref = load_reference(
-        repo_root,
-        first_settings.reference_directories,
-        first_settings.file_patterns,
-        first_settings.max_reference_size_kb,
-    )
-    ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
-    uncommitted = count_uncommitted_reference(
-        repo_root,
-        first_settings.reference_directories,
-        first_settings.file_patterns,
-        set(ref.keys()),
-    )
+    ref, ref_size_kb, uncommitted = _load_reference_context(repo_root, first_settings)
 
     exit_code = _run_iteration_and_present(
         resolved=resolved,
@@ -487,23 +495,10 @@ def _run_ask(
 ) -> int:
     """Write question to two files, run consensus on the answer file, persist both."""
     from multi_agent.consensus import run_iteration_loop
-    from multi_agent.context import load_reference, count_uncommitted_reference
 
     first_settings = next(iter(resolved.agent_settings.values()))
 
-    ref = load_reference(
-        repo_root,
-        first_settings.reference_directories,
-        first_settings.file_patterns,
-        first_settings.max_reference_size_kb,
-    )
-    ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
-    uncommitted = count_uncommitted_reference(
-        repo_root,
-        first_settings.reference_directories,
-        first_settings.file_patterns,
-        set(ref.keys()),
-    )
+    ref, ref_size_kb, uncommitted = _load_reference_context(repo_root, first_settings)
 
     backend = _create_backend(resolved)
     on_phase = _make_phase_handler(resolved)
@@ -540,23 +535,7 @@ def _run_ask(
     # Persist the answer to disk so it survives after the console closes.
     answer_path.write_text(answer)
 
-    # Consensus status
-    if result.consensus_reached:
-        last_round = result.rounds[-1] if result.rounds else None
-        if last_round:
-            print_iteration_success(last_round.approvals, len(last_round.reviews))
-        else:
-            print_iteration_success(0, 0)
-    else:
-        total = len(result.rounds[-1].reviews) if result.rounds else 0
-        print_iteration_exhausted(
-            rounds_run=len(result.rounds),
-            max_rounds=resolved.max_rounds,
-            approvals=result.best_approvals,
-            total=total,
-            best_round=result.best_round,
-            stalled=result.stalled,
-        )
+    _print_consensus_status(result, resolved)
 
     print_answer(answer)
     print_token_usage(result.total_usage, result.total_duration_seconds)

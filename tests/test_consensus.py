@@ -17,11 +17,13 @@ from multi_agent.config import (
     ResolvedRunConfig,
     resolve_run_config,
 )
+from multi_agent.arbitration import (
+    build_arbitration_prompt,
+    build_dissent_prompt,
+    detect_stall,
+    find_contested_edits,
+)
 from multi_agent.consensus import (
-    _build_arbitration_prompt,
-    _build_dissent_prompt,
-    _detect_stall,
-    _find_contested_edits,
     _last_modifiers,
     _run_single_proposer,
     _run_single_reviewer,
@@ -112,7 +114,7 @@ class TestLastModifiers:
         assert len(result) == 0
 
 
-# --- _detect_stall ---
+# --- detect_stall ---
 
 
 class TestDetectStall:
@@ -129,24 +131,24 @@ class TestDetectStall:
         )
 
     def test_fewer_than_two_rounds(self):
-        assert _detect_stall([self._round(1)]) is False
+        assert detect_stall([self._round(1)]) is False
 
     def test_same_approvals_is_stall(self):
-        assert _detect_stall([self._round(1), self._round(1)]) is True
+        assert detect_stall([self._round(1), self._round(1)]) is True
 
     def test_fewer_approvals_is_stall(self):
-        assert _detect_stall([self._round(2), self._round(1)]) is True
+        assert detect_stall([self._round(2), self._round(1)]) is True
 
     def test_more_approvals_not_stall(self):
-        assert _detect_stall([self._round(1), self._round(2)]) is False
+        assert detect_stall([self._round(1), self._round(2)]) is False
 
 
-# --- _find_contested_edits ---
+# --- find_contested_edits ---
 
 
 class TestFindContestedEdits:
     def test_fewer_than_two_rounds_empty(self):
-        assert _find_contested_edits([], []) == []
+        assert find_contested_edits([], []) == []
 
     def test_edit_modified_in_two_rounds(self):
         proposals = [
@@ -164,7 +166,7 @@ class TestFindContestedEdits:
                 ], ""),
             ], False),
         ]
-        contested = _find_contested_edits(rounds, proposals)
+        contested = find_contested_edits(rounds, proposals)
         assert len(contested) == 1
         assert "alpha" in contested[0].versions
         assert "beta" in contested[0].versions
@@ -183,7 +185,7 @@ class TestFindContestedEdits:
                 ], ""),
             ], False),
         ]
-        contested = _find_contested_edits(rounds, proposals)
+        contested = find_contested_edits(rounds, proposals)
         assert len(contested) == 0
 
     def test_approved_agent_excluded(self):
@@ -206,13 +208,13 @@ class TestFindContestedEdits:
                 ], ""),
             ], False),
         ]
-        contested = _find_contested_edits(rounds, proposals)
+        contested = find_contested_edits(rounds, proposals)
         # beta approved in latest round, so only gamma + alpha versions
         if contested:
             assert "beta" not in contested[0].versions
 
 
-# --- _build_dissent_prompt ---
+# --- build_dissent_prompt ---
 
 
 class TestBuildDissentPrompt:
@@ -220,7 +222,7 @@ class TestBuildDissentPrompt:
         proposals = [
             AgentProposal("alpha", [FileEdit("f.md", "old", "new", "fix", "minor")], ""),
         ]
-        result = _build_dissent_prompt(proposals, {"f.md": "old"})
+        result = build_dissent_prompt(proposals, {"f.md": "old"})
         assert "old" in result
         assert "new" in result
 
@@ -229,12 +231,12 @@ class TestBuildDissentPrompt:
             AgentProposal("alpha", [], "No edits."),
             AgentProposal("beta", [FileEdit("f.md", "old", "new", "", "minor")], ""),
         ]
-        result = _build_dissent_prompt(proposals, {"f.md": "old"})
+        result = build_dissent_prompt(proposals, {"f.md": "old"})
         assert "alpha" not in result
         assert "beta" in result
 
 
-# --- _build_arbitration_prompt ---
+# --- build_arbitration_prompt ---
 
 
 class TestBuildArbitrationPrompt:
@@ -245,7 +247,7 @@ class TestBuildArbitrationPrompt:
             versions={"alpha": "version_a", "beta": "version_b"},
             rationales={"alpha": "reason_a", "beta": "reason_b"},
         )
-        result = _build_arbitration_prompt(contested, {"f.md": "original"})
+        result = build_arbitration_prompt(contested, {"f.md": "original"})
         assert "f.md" in result
         assert "original" in result
         assert "version_a" in result

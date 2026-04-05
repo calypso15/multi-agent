@@ -44,6 +44,15 @@ class TokenUsage:
     cache_creation_input_tokens: int = 0
     cost_usd: float = 0.0
 
+    @property
+    def total_input_tokens(self) -> int:
+        """Total input tokens including cached."""
+        return (
+            self.input_tokens
+            + self.cache_read_input_tokens
+            + self.cache_creation_input_tokens
+        )
+
     def __iadd__(self, other: TokenUsage) -> TokenUsage:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens

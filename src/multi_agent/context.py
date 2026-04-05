@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from multi_agent.models import SEVERITY_ORDER
+
 if TYPE_CHECKING:
     from multi_agent.models import AgentProposal, FileEdit
 
@@ -155,6 +157,31 @@ def count_uncommitted_reference(
     return count
 
 
+def resolve_file_args(
+    file_paths: list[str],
+    repo_root: Path,
+    file_patterns: list[str],
+) -> list[str]:
+    """Resolve file arguments to relative paths, expanding directories."""
+    resolved: list[Path] = []
+    for fp in file_paths:
+        abs_path = Path(fp) if Path(fp).is_absolute() else repo_root / fp
+        if abs_path.is_dir():
+            for pattern in file_patterns:
+                resolved.extend(sorted(abs_path.rglob(pattern)))
+        elif abs_path.is_file():
+            resolved.append(abs_path)
+        else:
+            raise FileNotFoundError(f"File not found: {fp}")
+
+    if not resolved:
+        raise FileNotFoundError(
+            f"No files matching {file_patterns} found in: "
+            + ", ".join(file_paths)
+        )
+
+    return [str(p.relative_to(repo_root)) for p in resolved]
+
 
 def _reference_section(reference: dict[str, str]) -> str:
     """Build the reference context section of a prompt.
@@ -180,13 +207,10 @@ def _reference_section(reference: dict[str, str]) -> str:
 
 # --- Propose / Review prompt builders ---
 
-_SEVERITY_ORDER = ["critical", "major", "minor", "suggestion"]
-
-
 def _propose_instructions(min_severity: str) -> str:
     """Build propose instructions with severity threshold."""
-    idx = _SEVERITY_ORDER.index(min_severity) if min_severity in _SEVERITY_ORDER else 2
-    allowed = _SEVERITY_ORDER[:idx + 1]
+    idx = SEVERITY_ORDER.index(min_severity) if min_severity in SEVERITY_ORDER else 2
+    allowed = SEVERITY_ORDER[:idx + 1]
     severity_note = ""
     if min_severity != "suggestion":
         severity_note = (
@@ -280,28 +304,6 @@ def build_review_round_prompt(
 
     parts.append(_REVIEW_ROUND_INSTRUCTIONS)
     return "".join(parts)
-
-
-def _apply_edits_to_text(content: str, edits: list[FileEdit]) -> str:
-    """Apply a single agent's edits to text.
-
-    Locates each edit by position, sorts, and applies back-to-front so
-    earlier replacements don't shift later positions. Used internally by
-    the merge module to build per-agent file versions.
-    """
-    located: list[tuple[int, int, str]] = []
-    for edit in edits:
-        pos = content.find(edit.original_text)
-        if pos < 0:
-            continue
-        located.append((pos, pos + len(edit.original_text), edit.replacement_text))
-
-    located.sort(key=lambda t: t[0])
-
-    for start, end, replacement in reversed(located):
-        content = content[:start] + replacement + content[end:]
-
-    return content
 
 
 def _build_unified_diff(

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from multi_agent.merge import _apply_edits_to_text
 from multi_agent.context import (
-    _apply_edits_to_text,
     _build_unified_diff,
     _propose_instructions,
     _reference_section,

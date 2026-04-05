@@ -12,6 +12,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from multi_agent.models import SEVERITY_ORDER
+
 if TYPE_CHECKING:
     from multi_agent.config import AgentConfig
     from multi_agent.models import (
@@ -184,7 +186,7 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
             sev_parts = ", ".join(
                 f"{cnt} {sev}" for sev, cnt in sorted(
                     sev_counts.items(),
-                    key=lambda x: ["critical", "major", "minor", "suggestion"].index(x[0]),
+                    key=lambda x: SEVERITY_ORDER.index(x[0]),
                 )
             )
             files = sorted({e.file for e in proposal.edits})
@@ -478,12 +480,7 @@ def print_agent_verbose_stats(
         parts.append(f"tools: {tool_parts}")
 
     # Token breakdown
-    total_input = (
-        usage.input_tokens
-        + usage.cache_read_input_tokens
-        + usage.cache_creation_input_tokens
-    )
-    token_parts = [f"in: {total_input:,}", f"out: {usage.output_tokens:,}"]
+    token_parts = [f"in: {usage.total_input_tokens:,}", f"out: {usage.output_tokens:,}"]
     if usage.cache_read_input_tokens:
         token_parts.append(f"cache read: {usage.cache_read_input_tokens:,}")
     if usage.cache_creation_input_tokens:
@@ -501,12 +498,7 @@ def print_token_usage(usage: TokenUsage, duration: float) -> None:
     table.add_column(style="dim")
     table.add_column(justify="right")
 
-    total_input = (
-        usage.input_tokens
-        + usage.cache_read_input_tokens
-        + usage.cache_creation_input_tokens
-    )
-    table.add_row("Input tokens", f"{total_input:,}")
+    table.add_row("Input tokens", f"{usage.total_input_tokens:,}")
     if usage.cache_read_input_tokens:
         table.add_row("  Cache read", f"{usage.cache_read_input_tokens:,}")
     if usage.cache_creation_input_tokens:

@@ -573,6 +573,15 @@ async def _run_agent_impl(
 class ClaudeCliBackend:
     """AgentBackend implementation using the Claude CLI subprocess."""
 
+    def validate_tools(self, agent_name: str, tools: list[str]) -> None:
+        """Raise ValueError if any tool names are not recognized."""
+        invalid = set(tools) - KNOWN_TOOLS
+        if invalid:
+            raise ValueError(
+                f"Unknown tool(s) for agent '{agent_name}': "
+                f"{', '.join(sorted(invalid))}"
+            )
+
     async def run_agent(
         self,
         agent_name: str,

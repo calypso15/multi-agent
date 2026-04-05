@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from diff_match_patch import diff_match_patch
 
 if TYPE_CHECKING:
-    from multi_agent.models import AgentProposal
+    from multi_agent.models import AgentProposal, FileEdit
 
 
 @dataclass
@@ -148,6 +148,27 @@ def _ops_overlap(a: _ChangeOp, b: _ChangeOp) -> bool:
     return a.start < b.end and b.start < a.end
 
 
+def _apply_edits_to_text(content: str, edits: list[FileEdit]) -> str:
+    """Apply a single agent's edits to text.
+
+    Locates each edit by position, sorts, and applies back-to-front so
+    earlier replacements don't shift later positions.
+    """
+    located: list[tuple[int, int, str]] = []
+    for edit in edits:
+        pos = content.find(edit.original_text)
+        if pos < 0:
+            continue
+        located.append((pos, pos + len(edit.original_text), edit.replacement_text))
+
+    located.sort(key=lambda t: t[0])
+
+    for start, end, replacement in reversed(located):
+        content = content[:start] + replacement + content[end:]
+
+    return content
+
+
 def merge_agent_edits(
     file_contents: dict[str, str],
     proposals: list[AgentProposal],
@@ -164,8 +185,6 @@ def merge_agent_edits(
 
     Returns MergeResult with merged texts and any conflicts.
     """
-    from multi_agent.context import _apply_edits_to_text
-
     merged_texts: dict[str, str] = {}
     failed_patches: list[FailedPatch] = []
 

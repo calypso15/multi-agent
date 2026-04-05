@@ -324,12 +324,10 @@ def _insert_builtin_commands(config: MultiAgentConfig) -> None:
             config.commands[builtin_name] = dataclasses.replace(builtin_default)
         else:
             merged = dataclasses.replace(builtin_default)
+            blank = CommandConfig()
             for fld in dataclasses.fields(CommandConfig):
                 val = getattr(config.commands[builtin_name], fld.name)
-                if val != fld.default and val != (
-                    fld.default_factory() if fld.default_factory is not dataclasses.MISSING  # type: ignore[comparison-overlap]
-                    else fld.default
-                ):
+                if val != getattr(blank, fld.name):
                     setattr(merged, fld.name, val)
             config.commands[builtin_name] = merged
 
@@ -379,9 +377,7 @@ def resolve_run_config(
         )
         # review_model falls back to propose_model if still None
         if review_model is None:
-            review_model = _first_set(
-                cmd.propose_model, agent_cfg.propose_model, general.propose_model,
-            )
+            review_model = propose_model
 
         agent_settings[name] = ResolvedAgentSettings(
             propose_model=propose_model,
@@ -453,15 +449,6 @@ def resolve_run_config(
             f"consensus_threshold ({consensus_threshold}) "
             f"exceeds enabled agent count ({len(agents)})"
         )
-
-    from multi_agent.claude_runner import KNOWN_TOOLS
-    for name, settings in agent_settings.items():
-        invalid = set(settings.allowed_tools) - KNOWN_TOOLS
-        if invalid:
-            raise ValueError(
-                f"Unknown tool(s) for agent '{name}': "
-                f"{', '.join(sorted(invalid))}"
-            )
 
     return ResolvedRunConfig(
         agent_settings=agent_settings,
