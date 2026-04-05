@@ -360,6 +360,20 @@ def print_dissents(dissents: list[Dissent]) -> None:
     console.print()
 
 
+def print_answer(answer_text: str) -> None:
+    """Display a consensus answer in a prominent panel."""
+    from rich.markdown import Markdown
+
+    console.print()
+    console.print(Rule("[bold cyan]Answer[/bold cyan]", style="cyan"))
+    console.print()
+    console.print(Panel(
+        Markdown(answer_text),
+        border_style="green",
+        padding=(1, 2),
+    ))
+
+
 def print_changes_applied(files: list[str]) -> None:
     """Print confirmation that changes were applied."""
     console.print()

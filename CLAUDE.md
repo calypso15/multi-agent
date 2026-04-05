@@ -23,7 +23,7 @@ python -m multi_agent check-config   # validate config (needs --repo or a multi_
 - **`models.py`** — Dataclasses (`FileEdit`, `AgentProposal`, `AgentReviewResponse`, etc.), JSON parsing, path sanitization. Severity helpers: `SEVERITY_ORDER`, `severity_index()`, `filter_edits_by_severity()`, `is_blocking_severity()`, `count_blocking_approvals()`.
 - **`output.py`** — Rich terminal formatting. Call `init_agent_styles(config.agents)` after loading config to set up display names and colors.
 - **`merge.py`** — N-way edit merging via diff-match-patch.
-- **`cli.py`** — `ConfigGroup` auto-generates top-level Click commands from TOML `[commands]`. Built-in commands: `review`, `install-hook`, `uninstall-hook`, `check-config`. `_create_backend()` factory instantiates the backend from config.
+- **`cli.py`** — `ConfigGroup` auto-generates top-level Click commands from TOML `[commands]`. Built-in commands: `review`, `ask`, `install-hook`, `uninstall-hook`, `check-config`. `_create_backend()` factory instantiates the backend from config. `_make_phase_handler()` creates a shared phase-event callback used by both review and ask flows.
 
 ## Key patterns
 
@@ -34,6 +34,7 @@ python -m multi_agent check-config   # validate config (needs --repo or a multi_
 - **Severity classification** — Each `FileEdit` carries a `severity` field (`"critical"`, `"major"`, `"minor"`, `"suggestion"`). Two thresholds in `GeneralConfig`: `min_severity` drops edits below the threshold after parsing; `min_blocking_severity` determines which edits can block consensus. `count_blocking_approvals()` counts a review as approving if its only MODIFY verdicts target non-blocking edits. Non-blocking modifications are still applied via `merge_proposals` before the consensus break.
 - **Self-modification skip** — Edits an agent last modified are skipped in the review prompt via `skip_edits` passed to `build_review_round_prompt()`. Edits are omitted from the prompt but indices are preserved (no renumbering), so `merge_proposals` index lookups remain correct.
 - Agents never review their own proposals.
+- **Ask command (temp-file Q&A)** — `ask` reuses the entire edit-based consensus loop by writing the question to a temp file (`.multi_agent_ask.md`) inside the repo, running `run_iteration_loop()` with a prompt that tells agents to replace the question with an answer, then displaying the merged result. The temp file is always cleaned up in a `finally` block. `DEFAULT_ASK_COMMAND` in `config.py` provides the default prompt.
 - `build_cli_args()` and `KNOWN_TOOLS` live in `claude_runner.py` (Claude CLI concerns). Re-exported from `agents.py` for backward compatibility.
 
 ## Development practices

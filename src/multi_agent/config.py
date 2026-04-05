@@ -69,6 +69,17 @@ DEFAULT_REVIEW_COMMAND = CommandConfig(
     ),
 )
 
+DEFAULT_ASK_COMMAND = CommandConfig(
+    description="Ask a question and get a consensus answer",
+    prompt=(
+        "The file contains a question. Replace the ENTIRE content of the file "
+        "with a thorough, well-structured Markdown answer to the question. "
+        "Your answer should draw on your specialty expertise. Use the reference "
+        "files for context. The original_text should be the full file content "
+        "and the replacement_text should be your complete answer."
+    ),
+)
+
 
 @dataclass
 class MultiAgentConfig:
@@ -107,6 +118,8 @@ def load_config(
         config = MultiAgentConfig()
         if "review" not in config.commands:
             config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
+        if "ask" not in config.commands:
+            config.commands["ask"] = dataclasses.replace(DEFAULT_ASK_COMMAND)
         return config
 
     with open(path, "rb") as f:
@@ -224,9 +237,11 @@ def load_config(
             f"got '{config.general.backend}'"
         )
 
-    # Insert default review command if missing.
+    # Insert default commands if missing.
     if "review" not in config.commands:
         config.commands["review"] = dataclasses.replace(DEFAULT_REVIEW_COMMAND)
+    if "ask" not in config.commands:
+        config.commands["ask"] = dataclasses.replace(DEFAULT_ASK_COMMAND)
 
     enabled_agents = {k for k, v in config.agents.items() if v.enabled}
     for name, cmd_cfg in config.commands.items():

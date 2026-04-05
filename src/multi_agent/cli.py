@@ -14,6 +14,7 @@ from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
     init_agent_styles,
+    print_answer,
     print_arbitration_done,
     print_arbitration_start,
     print_changes_applied,
@@ -157,6 +158,35 @@ def _create_backend(config):
     raise ValueError(f"Unknown backend: {config.general.backend}")
 
 
+def _make_phase_handler():
+    """Create a callback that prints phase results as they complete."""
+    from multi_agent.models import (
+        ArbitrationDone,
+        ArbitrationStart,
+        DissentsDone,
+        PhaseEvent,
+        ProposeDone,
+        ReviewDone,
+    )
+
+    def on_phase(event: PhaseEvent) -> None:
+        match event:
+            case ProposeDone(proposals=proposals):
+                print_proposals_summary(proposals)
+            case ReviewDone(round_number=rn, reviews=reviews,
+                            consensus_threshold=ct,
+                            blocking_approvals=ba):
+                print_review_round(rn, reviews, ct, blocking_approvals=ba)
+            case ArbitrationStart(contested=contested):
+                print_arbitration_start(contested)
+            case ArbitrationDone(results=results):
+                print_arbitration_done(results)
+            case DissentsDone(dissents=dissents):
+                print_dissents(dissents)
+
+    return on_phase
+
+
 def _run_iteration_and_present(
     config,
     repo_root: Path,
@@ -176,31 +206,9 @@ def _run_iteration_and_present(
     """Run the iteration loop and present results. Returns exit code."""
     from multi_agent.consensus import run_iteration_loop
     from multi_agent.context import apply_merged_texts, build_diff_preview_from_merged
-    from multi_agent.models import (
-        ArbitrationDone,
-        ArbitrationStart,
-        DissentsDone,
-        PhaseEvent,
-        ProposeDone,
-        ReviewDone,
-    )
 
     backend = _create_backend(config)
-
-    def on_phase(event: PhaseEvent) -> None:
-        match event:
-            case ProposeDone(proposals=proposals):
-                print_proposals_summary(proposals)
-            case ReviewDone(round_number=rn, reviews=reviews,
-                            consensus_threshold=ct,
-                            blocking_approvals=ba):
-                print_review_round(rn, reviews, ct, blocking_approvals=ba)
-            case ArbitrationStart(contested=contested):
-                print_arbitration_start(contested)
-            case ArbitrationDone(results=results):
-                print_arbitration_done(results)
-            case DissentsDone(dissents=dissents):
-                print_dissents(dissents)
+    on_phase = _make_phase_handler()
 
     display_task = task_label or command_name
     print_header(files_display, ref_count, ref_size_kb, uncommitted_ref, task=display_task)
@@ -442,6 +450,141 @@ def review(
         multi-agent review                  # reviews staged files
     """
     _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name, prompt)
+
+
+def _run_ask(
+    config,
+    repo_root: Path,
+    question: str,
+    command_name: str = "ask",
+    command_prompt: str | None = None,
+    command_propose_model: str | None = None,
+    command_review_model: str | None = None,
+    task_label: str = "ask",
+) -> int:
+    """Create a temp question file, run consensus, and display the answer."""
+    from multi_agent.consensus import run_iteration_loop
+    from multi_agent.context import load_reference, count_uncommitted_reference
+
+    ref = load_reference(
+        repo_root,
+        config.general.reference_directories,
+        config.general.file_patterns,
+        config.general.max_reference_size_kb,
+    )
+    ref_size_kb = sum(len(v.encode()) for v in ref.values()) / 1024
+    uncommitted = count_uncommitted_reference(
+        repo_root,
+        config.general.reference_directories,
+        config.general.file_patterns,
+        set(ref.keys()),
+    )
+
+    backend = _create_backend(config)
+    on_phase = _make_phase_handler()
+
+    cmd_config = config.commands.get(command_name)
+    if cmd_config is None:
+        from multi_agent.config import DEFAULT_ASK_COMMAND
+        cmd_config = DEFAULT_ASK_COMMAND
+    prompt_text = command_prompt or cmd_config.prompt
+
+    temp_name = ".multi_agent_ask.md"
+    temp_path = repo_root / temp_name
+    try:
+        temp_path.write_text(question)
+
+        print_header(
+            [temp_name], len(ref), ref_size_kb, uncommitted, task=task_label,
+        )
+
+        result = asyncio.run(run_iteration_loop(
+            config, str(repo_root), backend,
+            target_files=[temp_name],
+            command_name=command_name,
+            command_prompt=prompt_text,
+            command_propose_model=command_propose_model or cmd_config.propose_model,
+            command_review_model=command_review_model or cmd_config.review_model,
+            on_progress=print_progress,
+            on_phase=on_phase,
+        ))
+
+        if not result.merged_texts:
+            print_no_edits()
+            print_token_usage(result.total_usage, result.total_duration_seconds)
+            return 0
+
+        answer = result.merged_texts.get(temp_name, "")
+
+        # Consensus status
+        if result.consensus_reached:
+            last_round = result.rounds[-1] if result.rounds else None
+            if last_round:
+                print_iteration_success(last_round.approvals, len(last_round.reviews))
+            else:
+                print_iteration_success(0, 0)
+        else:
+            total = len(result.rounds[-1].reviews) if result.rounds else 0
+            print_iteration_exhausted(
+                rounds_run=len(result.rounds),
+                max_rounds=config.general.max_rounds,
+                approvals=result.best_approvals,
+                total=total,
+                best_round=result.best_round,
+                stalled=result.stalled,
+            )
+
+        print_answer(answer)
+        print_token_usage(result.total_usage, result.total_duration_seconds)
+        return 0
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+@main.command()
+@click.argument("question", nargs=-1, required=True)
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+              help="Path to multi_agent.toml config file.")
+@click.option("--max-rounds", type=int, default=None,
+              help="Override max iteration rounds.")
+@click.pass_context
+def ask(
+    ctx: click.Context,
+    question: tuple[str, ...],
+    config_path: str | None,
+    max_rounds: int | None,
+) -> None:
+    """Ask a question and get a consensus answer from all agents.
+
+    \b
+    Examples:
+        multi-agent ask "What are the main themes of this project?"
+        multi-agent ask What is the best approach for character development
+        multi-agent ask --max-rounds 5 "How should we handle the timeline?"
+    """
+    question_text = " ".join(question)
+    if not question_text.strip():
+        raise click.BadParameter("Question cannot be empty.", param_hint="'QUESTION'")
+
+    try:
+        repo_root = _resolve_repo(ctx)
+    except Exception:
+        print_error("Not in a git repository.")
+        sys.exit(1)
+
+    config = load_config(
+        Path(config_path) if config_path else None,
+        search_from=repo_root,
+    )
+    init_agent_styles(config.agents)
+    if max_rounds is not None:
+        config = dataclasses.replace(
+            config,
+            general=dataclasses.replace(config.general, max_rounds=max_rounds),
+        )
+
+    exit_code = _run_ask(config=config, repo_root=repo_root, question=question_text)
+    sys.exit(exit_code)
 
 
 @main.command("install-hook")
