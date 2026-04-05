@@ -14,6 +14,7 @@ from multi_agent.context import find_git_root
 from multi_agent.output import (
     console,
     init_agent_styles,
+    is_detail,
     is_verbose,
     print_agent_verbose_stats,
     print_answer,
@@ -30,12 +31,15 @@ from multi_agent.output import (
     print_no_edits,
     print_no_files,
     print_progress,
+    print_proposal_details,
     print_propose_start,
     print_proposals_summary,
     print_resolved_config,
+    print_review_details,
     print_review_round,
     print_review_start,
     print_token_usage,
+    set_detail,
     set_verbose,
 )
 
@@ -101,6 +105,8 @@ def _make_toml_command(cmd_name: str, cmd_config: CommandConfig) -> click.Comman
                   help="Override max iteration rounds.")
     @click.option("--prompt", "prompt", default=None,
                   help="Additional instructions for the agents.")
+    @click.option("--detail", "-d", is_flag=True, default=False,
+                  help="Show full edit content for each round.")
     @click.option("--verbose", "-v", is_flag=True, default=False,
                   help="Show detailed agent activity, config, and token usage.")
     @click.pass_context
@@ -111,8 +117,10 @@ def _make_toml_command(cmd_name: str, cmd_config: CommandConfig) -> click.Comman
         dry_run: bool,
         max_rounds: int | None,
         prompt: str | None,
+        detail: bool,
         verbose: bool,
     ) -> None:
+        set_detail(detail)
         set_verbose(verbose)
         _review_common(
             ctx, files, config_path, False, dry_run, max_rounds, cmd_name, prompt,
@@ -190,6 +198,8 @@ def _make_phase_handler(resolved=None):
                 print_review_start(rn)
             case ProposeDone(proposals=proposals):
                 print_proposals_summary(proposals)
+                if is_detail():
+                    print_proposal_details(proposals)
                 if is_verbose() and resolved:
                     for p in proposals:
                         print_agent_verbose_stats(
@@ -198,8 +208,11 @@ def _make_phase_handler(resolved=None):
                         )
             case ReviewDone(round_number=rn, reviews=reviews,
                             consensus_threshold=ct,
-                            blocking_approvals=ba):
+                            blocking_approvals=ba,
+                            proposals=props):
                 print_review_round(rn, reviews, ct, blocking_approvals=ba)
+                if is_detail():
+                    print_review_details(reviews, props)
                 if is_verbose() and resolved:
                     for r in reviews:
                         print_agent_verbose_stats(
@@ -458,6 +471,8 @@ def _review_common(
               help="Run a command from [commands] config (e.g. expand, contract).")
 @click.option("--prompt", "prompt", default=None,
               help="Additional instructions for the agents.")
+@click.option("--detail", "-d", is_flag=True, default=False,
+              help="Show full edit content for each round.")
 @click.option("--verbose", "-v", is_flag=True, default=False,
               help="Show detailed agent activity, config, and token usage.")
 @click.pass_context
@@ -470,6 +485,7 @@ def review(
     max_rounds: int | None,
     task_name: str | None,
     prompt: str | None,
+    detail: bool,
     verbose: bool,
 ) -> None:
     """Review files and propose changes via consensus.
@@ -484,6 +500,7 @@ def review(
         multi-agent review --prompt "Add epigraphs to each section" docs/
         multi-agent review                  # reviews staged files
     """
+    set_detail(detail)
     set_verbose(verbose)
     _review_common(ctx, files, config_path, hook_mode, dry_run, max_rounds, task_name, prompt)
 
@@ -548,6 +565,8 @@ def _run_ask(
               help="Path to multi_agent.toml config file.")
 @click.option("--max-rounds", type=int, default=None,
               help="Override max iteration rounds.")
+@click.option("--detail", "-d", is_flag=True, default=False,
+              help="Show full edit content for each round.")
 @click.option("--verbose", "-v", is_flag=True, default=False,
               help="Show detailed agent activity, config, and token usage.")
 @click.pass_context
@@ -556,6 +575,7 @@ def ask(
     question: tuple[str, ...],
     config_path: str | None,
     max_rounds: int | None,
+    detail: bool,
     verbose: bool,
 ) -> None:
     """Ask a question and get a consensus answer from all agents.
@@ -566,6 +586,7 @@ def ask(
         multi-agent ask What is the best approach for character development
         multi-agent ask --max-rounds 5 "How should we handle the timeline?"
     """
+    set_detail(detail)
     set_verbose(verbose)
     question_text = " ".join(question)
     if not question_text.strip():

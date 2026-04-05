@@ -294,12 +294,14 @@ def build_agent_system_prompt(
     *,
     command_name: str | None = None,
     command_prompt: str | None = None,
+    max_turns: int = 0,
 ) -> str:
     """Build a complete system prompt for an agent in the given mode.
 
     system_prompt: the agent's base prompt from config.
     mode: "command" (user-facing task) or "review"/"dissent" (internal phase).
     For "command" mode, command_name and command_prompt must be provided.
+    max_turns: if > 0, appends a turn budget notice so the agent can plan.
     """
     if mode == "command":
         suffix = build_command_mode_suffix(
@@ -307,7 +309,14 @@ def build_agent_system_prompt(
         )
     else:
         suffix = _INTERNAL_MODE_SUFFIXES.get(mode, "")
-    return system_prompt + suffix
+    prompt = system_prompt + suffix
+    if max_turns > 0:
+        prompt += (
+            f"\n\nIMPORTANT: You have a budget of {max_turns} turn(s). "
+            "Plan your tool usage carefully and return your JSON response "
+            "before running out of turns."
+        )
+    return prompt
 
 
 # Re-exports — these now live in claude_runner but are kept here for

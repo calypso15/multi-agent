@@ -196,6 +196,7 @@ class ReviewDone:
     reviews: list[AgentReviewResponse]
     consensus_threshold: int
     blocking_approvals: int = 0
+    proposals: list[AgentProposal] = field(default_factory=list)
 
 
 @dataclass

@@ -303,6 +303,7 @@ async def run_propose_phase(
             name, "command", agent_cfg.system_prompt,
             command_name=resolved.command_name,
             command_prompt=resolved.command_prompt,
+            max_turns=settings.propose_max_turns,
         )
         proposals.append(await _run_single_proposer(
             name, propose_prompt, backend, system_prompt, repo_root,
@@ -392,6 +393,7 @@ async def run_review_phase(
         )
         system_prompt = build_agent_system_prompt(
             name, "review", agent_cfg.system_prompt,
+            max_turns=settings.review_max_turns,
         )
         reviews.append(await _run_single_reviewer(
             name, review_prompt, backend, system_prompt, repo_root,
@@ -569,6 +571,7 @@ async def run_iteration_loop(
                 reviews=reviews,
                 consensus_threshold=resolved.consensus_threshold,
                 blocking_approvals=approvals,
+                proposals=current_proposals,
             ))
 
         # Track the version with the highest approval count

@@ -269,9 +269,9 @@ prompt = "Simplify complex passages while preserving technical accuracy."
 ## CLI Reference
 
 ```
-multi-agent [--repo PATH] review [FILES] [--task NAME] [--dry-run] [--max-rounds N] [--prompt TEXT]
-multi-agent [--repo PATH] ask QUESTION [--max-rounds N]
-multi-agent [--repo PATH] <command> FILES [--dry-run] [--max-rounds N] [--prompt TEXT]
+multi-agent [--repo PATH] review [FILES] [--task NAME] [--dry-run] [--max-rounds N] [--prompt TEXT] [-d] [-v]
+multi-agent [--repo PATH] ask QUESTION [--max-rounds N] [-d] [-v]
+multi-agent [--repo PATH] <command> FILES [--dry-run] [--max-rounds N] [--prompt TEXT] [-d] [-v]
 multi-agent [--repo PATH] install-hook
 multi-agent [--repo PATH] uninstall-hook
 multi-agent [--repo PATH] check-config
@@ -286,6 +286,8 @@ multi-agent [--repo PATH] check-config
 - `--dry-run` — show proposed changes without applying
 - `--max-rounds N` — override the configured max iteration rounds
 - `--prompt TEXT` — append additional instructions for the agents
+- `--detail`, `-d` — show full edit content for each round (what each agent proposed, what reviewers modified)
+- `--verbose`, `-v` — show operational telemetry (token usage, tool calls, turns, resolved config)
 
 ## Project Structure
 
@@ -296,8 +298,9 @@ multi-agent/
     ├── models.py             # Dataclasses, typed events, parsing utilities
     ├── claude_runner.py      # Claude CLI subprocess management
     ├── consensus.py          # Propose-review-iterate orchestration loop
+    ├── arbitration.py        # Stall detection, arbitration, dissent collection
     ├── agents.py             # Agent system prompts, JSON schemas, prompt modes
-    ├── context.py            # Git integration, prompt builders
+    ├── context.py            # Git integration, file resolution, prompt builders
     ├── merge.py              # N-way edit merging via diff-match-patch
     ├── cli.py                # CLI commands
     ├── output.py             # Rich terminal output formatting

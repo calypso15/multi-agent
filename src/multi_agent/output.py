@@ -46,6 +46,20 @@ def is_verbose() -> bool:
     return _VERBOSE
 
 
+_DETAIL = False
+
+
+def set_detail(value: bool) -> None:
+    """Enable or disable detailed edit output."""
+    global _DETAIL
+    _DETAIL = value
+
+
+def is_detail() -> bool:
+    """Return whether detailed edit output is enabled."""
+    return _DETAIL
+
+
 def init_agent_styles(agents: dict[str, AgentConfig]) -> None:
     """Initialize display names and colors from agent config.
 
@@ -63,6 +77,15 @@ def init_agent_styles(agents: dict[str, AgentConfig]) -> None:
 def _agent_style(agent_name: str) -> str:
     """Get the color style for an agent."""
     return _COLORS.get(agent_name, "white")
+
+
+def _truncate_text(text: str, max_lines: int = 20) -> str:
+    """Truncate text to *max_lines*, appending a count of omitted lines."""
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    omitted = len(lines) - max_lines
+    return "\n".join(lines[:max_lines]) + f"\n[...{omitted} more lines]"
 
 
 console = Console(stderr=True)
@@ -203,6 +226,94 @@ def print_proposals_summary(proposals: list[AgentProposal]) -> None:
     console.print(
         f"\n  [dim]{total_edits} total edit(s) proposed[/dim]"
     )
+
+
+def print_proposal_details(proposals: list[AgentProposal]) -> None:
+    """Print full edit content for each agent's proposal."""
+    for proposal in proposals:
+        if proposal.error or not proposal.edits:
+            continue
+        display = _DISPLAY_NAMES.get(proposal.agent_name, proposal.agent_name)
+        color = _agent_style(proposal.agent_name)
+
+        parts: list[str] = []
+        if proposal.summary:
+            parts.append(f"[dim]Summary:[/dim] {proposal.summary}\n")
+
+        for i, edit in enumerate(proposal.edits):
+            parts.append(f"[bold]Edit {i}[/bold] ({edit.severity}) \u2014 {edit.file}")
+            if edit.rationale:
+                parts.append(f"[dim]Rationale:[/dim] {edit.rationale}")
+            parts.append(f"[dim]\u2500\u2500 original \u2500\u2500[/dim]")
+            parts.append(_truncate_text(edit.original_text))
+            parts.append(f"[dim]\u2500\u2500 replacement \u2500\u2500[/dim]")
+            parts.append(_truncate_text(edit.replacement_text))
+            parts.append("")
+
+        console.print(Panel(
+            "\n".join(parts).rstrip(),
+            title=f"[{color}]{display} proposals[/{color}]",
+            border_style=color,
+            padding=(0, 2),
+        ))
+
+
+def print_review_details(
+    reviews: list[AgentReviewResponse],
+    proposals: list[AgentProposal],
+) -> None:
+    """Print full modification content for each reviewer's changes."""
+    proposal_map = {p.agent_name: p for p in proposals}
+
+    for review in reviews:
+        if review.all_approved or review.error:
+            continue
+        mods = [r for r in review.proposal_reviews if r.verdict == "MODIFY"]
+        if not mods:
+            continue
+
+        display = _DISPLAY_NAMES.get(review.agent_name, review.agent_name)
+        color = _agent_style(review.agent_name)
+
+        parts: list[str] = []
+        if review.summary:
+            parts.append(f"[dim]Summary:[/dim] {review.summary}\n")
+
+        for mod in mods:
+            orig_display = _DISPLAY_NAMES.get(mod.original_agent, mod.original_agent)
+            orig_color = _agent_style(mod.original_agent)
+
+            # Look up the original edit for file name and replacement text
+            prop = proposal_map.get(mod.original_agent)
+            if prop and mod.edit_index < len(prop.edits):
+                edit = prop.edits[mod.edit_index]
+                file_label = f" \u2014 {edit.file}"
+                original_replacement = edit.replacement_text
+            else:
+                file_label = ""
+                original_replacement = None
+
+            parts.append(
+                f"[bold]Edit {mod.edit_index}[/bold] from "
+                f"[{orig_color}]{orig_display}[/{orig_color}]{file_label}"
+            )
+            if mod.rationale:
+                parts.append(f"[dim]Rationale:[/dim] {mod.rationale}")
+
+            if original_replacement is not None:
+                parts.append(f"[dim]\u2500\u2500 original replacement \u2500\u2500[/dim]")
+                parts.append(_truncate_text(original_replacement))
+            if mod.modified_replacement is not None:
+                parts.append(f"[dim]\u2500\u2500 modified replacement \u2500\u2500[/dim]")
+                parts.append(_truncate_text(mod.modified_replacement))
+            parts.append("")
+
+        console.print(Panel(
+            "\n".join(parts).rstrip(),
+            title=f"[{color}]{display} review details[/{color}]",
+            border_style=color,
+            padding=(0, 2),
+        ))
 
 
 def print_review_round(
