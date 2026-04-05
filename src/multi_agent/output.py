@@ -393,17 +393,28 @@ def print_final_diff(diff_text: str) -> None:
 def print_edit_list(
     numbered_edits: list[tuple[int, str, "FileEdit"]],
 ) -> None:
-    """Print a numbered list of edits for selection.
+    """Print numbered edits with full content for selection.
 
     numbered_edits: list of (1-based index, agent_display_name, FileEdit).
     """
     console.print()
     for num, agent_display, edit in numbered_edits:
-        console.print(
-            f"  [bold]{num}.[/bold] [{edit.severity}] "
-            f"[dim]{edit.file}[/dim] — {edit.rationale[:80]}"
-            f"  [dim]({agent_display})[/dim]"
+        parts: list[str] = []
+        parts.append(
+            f"[bold]{num}.[/bold] [{edit.severity}] "
+            f"[dim]{edit.file}[/dim]  [dim]({agent_display})[/dim]"
         )
+        if edit.rationale:
+            parts.append(f"[dim]Rationale:[/dim] {edit.rationale}")
+        parts.append(f"[dim]\u2500\u2500 original \u2500\u2500[/dim]")
+        parts.append(_truncate_text(edit.original_text))
+        parts.append(f"[dim]\u2500\u2500 replacement \u2500\u2500[/dim]")
+        parts.append(_truncate_text(edit.replacement_text))
+        console.print(Panel(
+            "\n".join(parts),
+            border_style="dim",
+            padding=(0, 2),
+        ))
 
 
 def prompt_edit_selection(total: int) -> set[int] | None:

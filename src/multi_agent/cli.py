@@ -313,28 +313,10 @@ def _run_iteration_and_present(
         if path.is_file():
             file_contents[f] = path.read_text()
 
-    diff_text = build_diff_preview_from_merged(result.merged_texts, file_contents)
-
     _print_consensus_status(result, resolved)
-
-    # Show diff
-    print_final_diff(diff_text)
     print_token_usage(result.total_usage, result.total_duration_seconds)
 
-    if dry_run:
-        console.print("[dim]Dry run — no changes applied.[/dim]")
-        return 0
-
-    # Confirm and apply
-    if hook_mode and not sys.stdin.isatty():
-        # Non-interactive hook: don't apply, exit 1 so user can review
-        console.print(
-            "[yellow]Changes proposed but cannot confirm in non-interactive mode.[/yellow]\n"
-            "Run [bold]multi-agent review[/bold] to review and apply interactively."
-        )
-        return 1
-
-    # Build numbered edit list for per-edit selection
+    # Build numbered edit list
     from multi_agent.config import get_display_name
     numbered_edits: list[tuple[int, str, object]] = []
     edit_owners: list[tuple[str, int]] = []  # (agent_name, edit_index_in_proposal)
@@ -347,16 +329,34 @@ def _run_iteration_and_present(
             edit_owners.append((proposal.agent_name, i))
             num += 1
 
+    # Show numbered edits with full content
     print_edit_list(numbered_edits)
+
+    if dry_run:
+        console.print("[dim]Dry run — no changes applied.[/dim]")
+        return 0
+
+    # Non-interactive hook: show unified diff, don't apply
+    if hook_mode and not sys.stdin.isatty():
+        diff_text = build_diff_preview_from_merged(result.merged_texts, file_contents)
+        print_final_diff(diff_text)
+        console.print(
+            "[yellow]Changes proposed but cannot confirm in non-interactive mode.[/yellow]\n"
+            "Run [bold]multi-agent review[/bold] to review and apply interactively."
+        )
+        return 1
+
     selected = prompt_edit_selection(len(numbered_edits))
 
     if not selected:
         console.print("[dim]Changes not applied.[/dim]")
         return 1 if hook_mode else 0
 
-    # If user selected a subset, filter proposals and re-merge
-    texts_to_apply = result.merged_texts
-    if selected != set(range(1, len(numbered_edits) + 1)):
+    # Determine what to apply
+    all_selected = selected == set(range(1, len(numbered_edits) + 1))
+    if all_selected:
+        texts_to_apply = result.merged_texts
+    else:
         from multi_agent.merge import merge_agent_edits
         selected_keys = {edit_owners[n - 1] for n in selected}
         filtered = [
@@ -373,14 +373,14 @@ def _run_iteration_and_present(
             console.print("[dim]No changes to apply after filtering.[/dim]")
             return 0
 
-        # Show updated diff
-        new_diff = build_diff_preview_from_merged(texts_to_apply, file_contents)
-        if new_diff:
-            console.print(
-                f"\n  [bold cyan]Applying {len(selected)}/{len(numbered_edits)}"
-                f" edit(s)[/bold cyan]"
-            )
-            print_final_diff(new_diff)
+    # Show unified diff of what will be applied
+    diff_text = build_diff_preview_from_merged(texts_to_apply, file_contents)
+    if not all_selected:
+        console.print(
+            f"\n  [bold cyan]Applying {len(selected)}/{len(numbered_edits)}"
+            f" edit(s)[/bold cyan]"
+        )
+    print_final_diff(diff_text)
 
     modified = apply_merged_texts(repo_root, texts_to_apply)
     print_changes_applied(modified)
