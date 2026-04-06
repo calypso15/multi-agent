@@ -380,14 +380,30 @@ def print_review_round(
 
 
 def print_final_diff(diff_text: str) -> None:
-    """Render a unified diff with syntax highlighting."""
+    """Render a unified diff with colored lines in a bordered panel."""
     if not diff_text.strip():
         return
     console.print()
-    console.print(Rule("[bold cyan]Proposed Changes[/bold cyan]", style="cyan"))
-    console.print()
-    syntax = Syntax(diff_text, "diff", theme="monokai", line_numbers=False, word_wrap=True)
-    console.print(syntax)
+    body = Text()
+    for line in diff_text.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            body.append(line + "\n", style="bold")
+        elif line.startswith("@@"):
+            body.append(line + "\n", style="cyan")
+        elif line.startswith("+"):
+            body.append(line + "\n", style="green")
+        elif line.startswith("-"):
+            body.append(line + "\n", style="red")
+        else:
+            body.append(line + "\n")
+    # Strip trailing newline to avoid blank line at bottom of panel
+    body.rstrip()
+    console.print(Panel(
+        body,
+        title="[bold cyan]Proposed Changes[/bold cyan]",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
 
 
 def print_edit_list(
