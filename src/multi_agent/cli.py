@@ -300,6 +300,10 @@ def _run_iteration_and_present(
         on_phase=on_phase,
     ))
 
+    # Write structured log before any user interaction
+    from multi_agent.logging import write_run_log
+    write_run_log(repo_root, result, resolved)
+
     # No edits?
     if not result.merged_texts:
         print_no_edits()
@@ -586,6 +590,9 @@ def _run_ask(
         on_progress=print_progress,
         on_phase=on_phase,
     ))
+
+    from multi_agent.logging import write_run_log
+    write_run_log(repo_root, result, resolved)
 
     if not result.merged_texts:
         print_no_edits()

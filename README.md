@@ -88,6 +88,10 @@ The question and answer are saved to two files in your repo root that persist be
 
 Both files are overwritten on the next `ask` invocation. Add them to `.gitignore`.
 
+### Run logs
+
+Every run writes a structured JSON log to `.multi_agent_runs/` in the repo root. Logs capture proposals, reviews, arbitration results, dissents, token usage, and config — everything needed to understand why agents agreed or disagreed. Add `.multi_agent_runs/` to `.gitignore`.
+
 ### Commands
 
 Commands are defined in `[commands]` blocks in `multi_agent.toml`. They can be
