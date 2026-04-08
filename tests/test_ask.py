@@ -81,7 +81,7 @@ class TestDefaultAskCommand:
         ask = config.commands["ask"]
         # TOML overrides applied
         assert ask.review_model == "haiku"
-        assert ask.agents == ["alpha"]
+        assert list(ask.agents.keys()) == ["alpha"]
         # Defaults inherited
         assert ask.prompt == DEFAULT_ASK_COMMAND.prompt
         assert ask.propose_instructions == DEFAULT_ASK_COMMAND.propose_instructions

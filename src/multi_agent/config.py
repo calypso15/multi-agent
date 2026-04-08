@@ -26,6 +26,7 @@ class AgentConfig:
     display_name: str | None = None
     enabled: bool = True
     # Per-agent cascading (None = inherit from general)
+    weight: int | None = None
     propose_model: str | None = None
     review_model: str | None = None
     propose_max_turns: int | None = None
@@ -67,11 +68,26 @@ class GeneralConfig:
 
 
 @dataclass
+class CommandAgentConfig:
+    """Per-agent overrides within a command."""
+    weight: int | None = None
+    propose_model: str | None = None
+    review_model: str | None = None
+    propose_max_turns: int | None = None
+    review_max_turns: int | None = None
+    timeout_seconds: int | None = None
+    allowed_tools: list[str] | None = None
+    file_patterns: list[str] | None = None
+    reference_directories: list[str] | None = None
+    max_reference_size_kb: int | None = None
+
+
+@dataclass
 class CommandConfig:
     # Command-only
     prompt: str = ""
     description: str = ""
-    agents: list[str] = field(default_factory=list)
+    agents: dict[str, CommandAgentConfig] = field(default_factory=dict)
     propose_instructions: str | None = None
     # Per-agent cascading (None = inherit)
     propose_model: str | None = None
@@ -140,6 +156,7 @@ class MultiAgentConfig:
 @dataclass(frozen=True)
 class ResolvedAgentSettings:
     """Fully resolved settings for one agent in the context of one command."""
+    weight: int
     propose_model: str | None      # None = backend default
     review_model: str | None       # None = backend default
     propose_max_turns: int
@@ -255,6 +272,7 @@ def load_config(
             )
         section = "commands" if "commands" in raw else "tasks"
         valid = _field_names(CommandConfig)
+        cmd_agent_valid = _field_names(CommandAgentConfig)
         for name, cmd_raw in commands_raw.items():
             unknown = set(cmd_raw.keys()) - valid
             if unknown:
@@ -262,9 +280,36 @@ def load_config(
                     f"Unknown key(s) in [{section}.{name}]: "
                     f"{', '.join(sorted(unknown))}"
                 )
-            config.commands[name] = CommandConfig(
-                **{k: v for k, v in cmd_raw.items() if k in valid}
-            )
+            # Convert agents field: list → dict with empty overrides,
+            # dict → dict with CommandAgentConfig values.
+            fields = {k: v for k, v in cmd_raw.items() if k in valid}
+            if "agents" in fields:
+                raw_agents = fields["agents"]
+                if isinstance(raw_agents, list):
+                    fields["agents"] = {
+                        n: CommandAgentConfig() for n in raw_agents
+                    }
+                elif isinstance(raw_agents, dict):
+                    parsed_agents = {}
+                    for agent_name, overrides in raw_agents.items():
+                        if not isinstance(overrides, dict):
+                            raise ValueError(
+                                f"[{section}.{name}.agents.{agent_name}] "
+                                "must be a table, not a scalar"
+                            )
+                        bad = set(overrides.keys()) - cmd_agent_valid
+                        if bad:
+                            raise ValueError(
+                                f"Unknown key(s) in "
+                                f"[{section}.{name}.agents.{agent_name}]: "
+                                f"{', '.join(sorted(bad))}"
+                            )
+                        parsed_agents[agent_name] = CommandAgentConfig(
+                            **{k: v for k, v in overrides.items()
+                               if k in cmd_agent_valid}
+                        )
+                    fields["agents"] = parsed_agents
+            config.commands[name] = CommandConfig(**fields)
 
     # --- Structural validation (raw config) ---
 
@@ -351,9 +396,9 @@ def resolve_run_config(
 ) -> ResolvedRunConfig:
     """Build a fully resolved run config from raw config + command.
 
-    Applies cascading: command > agent > general for per-agent settings,
-    command > general for per-run settings.  Agent filtering from
-    cmd_config.agents is applied here.
+    Applies cascading: command-agent > command > agent > general for
+    per-agent settings, command > general for per-run settings.
+    Agent filtering from cmd_config.agents is applied here.
     """
     cmd = cmd_config or CommandConfig()
     general = config.general
@@ -365,48 +410,59 @@ def resolve_run_config(
     else:
         agents = {k: v for k, v in config.agents.items() if v.enabled}
 
-    # Resolve per-agent settings
+    # Resolve per-agent settings (command-agent > command > agent > general)
     agent_settings: dict[str, ResolvedAgentSettings] = {}
     for name, agent_cfg in agents.items():
+        ca = cmd.agents.get(name, CommandAgentConfig()) if cmd.agents else CommandAgentConfig()
+
         propose_model = _first_set(
+            ca.propose_model,
             cmd.propose_model, agent_cfg.propose_model, general.propose_model,
         )
         review_model = _first_set(
-            cmd.review_model, agent_cfg.review_model,
-            general.review_model,
+            ca.review_model,
+            cmd.review_model, agent_cfg.review_model, general.review_model,
         )
         # review_model falls back to propose_model if still None
         if review_model is None:
             review_model = propose_model
 
         agent_settings[name] = ResolvedAgentSettings(
+            weight=_first_set(ca.weight, agent_cfg.weight, 1),
             propose_model=propose_model,
             review_model=review_model,
             propose_max_turns=_first_set(
+                ca.propose_max_turns,
                 cmd.propose_max_turns, agent_cfg.propose_max_turns,
                 general.propose_max_turns,
             ),
             review_max_turns=_first_set(
+                ca.review_max_turns,
                 cmd.review_max_turns, agent_cfg.review_max_turns,
                 general.review_max_turns,
             ),
             timeout_seconds=_first_set(
+                ca.timeout_seconds,
                 cmd.timeout_seconds, agent_cfg.timeout_seconds,
                 general.timeout_seconds,
             ),
             allowed_tools=_first_set(
+                ca.allowed_tools,
                 cmd.allowed_tools, agent_cfg.allowed_tools,
                 general.allowed_tools,
             ),
             file_patterns=_first_set(
+                ca.file_patterns,
                 cmd.file_patterns, agent_cfg.file_patterns,
                 general.file_patterns,
             ),
             reference_directories=_first_set(
+                ca.reference_directories,
                 cmd.reference_directories, agent_cfg.reference_directories,
                 general.reference_directories,
             ),
             max_reference_size_kb=_first_set(
+                ca.max_reference_size_kb,
                 cmd.max_reference_size_kb, agent_cfg.max_reference_size_kb,
                 general.max_reference_size_kb,
             ),
@@ -421,7 +477,8 @@ def resolve_run_config(
     consensus_threshold = _first_set(
         cmd.consensus_threshold, general.consensus_threshold,
     )
-    consensus_threshold = min(consensus_threshold, len(agents))
+    total_weight = sum(s.weight for s in agent_settings.values())
+    consensus_threshold = min(consensus_threshold, total_weight)
 
     # --- Semantic validation on resolved values ---
     valid_severities = ("critical", "major", "minor", "suggestion")
@@ -444,10 +501,10 @@ def resolve_run_config(
         )
     if max_rounds < 1:
         raise ValueError("max_rounds must be at least 1")
-    if consensus_threshold > len(agents):
+    if consensus_threshold > total_weight:
         raise ValueError(
             f"consensus_threshold ({consensus_threshold}) "
-            f"exceeds enabled agent count ({len(agents)})"
+            f"exceeds total agent weight ({total_weight})"
         )
 
     return ResolvedRunConfig(

@@ -627,6 +627,9 @@ def print_resolved_config(resolved) -> None:
         agent_table.add_column(style="dim")
         agent_table.add_column()
 
+        if settings.weight != 1:
+            agent_table.add_row("    Weight", str(settings.weight))
+
         propose_model = settings.propose_model or "default"
         review_model = settings.review_model or "default"
         if propose_model == review_model:

@@ -225,30 +225,41 @@ PhaseEvent = Union[
 # --- Helpers ---
 
 
-def count_approvals(reviews: list[AgentReviewResponse]) -> int:
-    """Count reviews that approved with no error."""
-    return sum(1 for r in reviews if r.all_approved and r.error is None)
+def count_approvals(
+    reviews: list[AgentReviewResponse],
+    weights: dict[str, int] | None = None,
+) -> int:
+    """Count weighted approvals with no error."""
+    w = weights or {}
+    return sum(
+        w.get(r.agent_name, 1)
+        for r in reviews if r.all_approved and r.error is None
+    )
 
 
 def count_blocking_approvals(
     reviews: list[AgentReviewResponse],
     proposals: list[AgentProposal],
     min_blocking_severity: str,
+    weights: dict[str, int] | None = None,
 ) -> int:
-    """Count reviews that don't object to any blocking-severity edit.
+    """Count weighted reviews that don't object to any blocking-severity edit.
 
     A review counts as a blocking-approval if:
     - It explicitly approved all edits, OR
     - Every MODIFY verdict targets an edit whose severity is below
       *min_blocking_severity* (i.e. non-blocking).
+
+    Each approval contributes the agent's weight (default 1).
     """
+    w = weights or {}
     proposal_map = {p.agent_name: p for p in proposals}
     count = 0
     for r in reviews:
         if r.error is not None:
             continue
         if r.all_approved:
-            count += 1
+            count += w.get(r.agent_name, 1)
             continue
         all_non_blocking = True
         for pr in r.proposal_reviews:
@@ -264,7 +275,7 @@ def count_blocking_approvals(
                 all_non_blocking = False
                 break
         if all_non_blocking:
-            count += 1
+            count += w.get(r.agent_name, 1)
     return count
 
 

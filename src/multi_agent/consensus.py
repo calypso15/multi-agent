@@ -464,6 +464,7 @@ async def run_iteration_loop(
     start = time.monotonic()
 
     display_names = {k: get_display_name(k, v) for k, v in resolved.agents.items()}
+    weights = {name: s.weight for name, s in resolved.agent_settings.items()}
 
     # Use the first agent's file_patterns for staged file resolution
     # (all agents see the same target files; per-agent patterns affect references)
@@ -590,6 +591,7 @@ async def run_iteration_loop(
         approvals = count_blocking_approvals(
             reviews, current_proposals,
             resolved.min_blocking_severity,
+            weights=weights,
         )
         consensus_reached = approvals >= resolved.consensus_threshold
 
