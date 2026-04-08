@@ -82,11 +82,7 @@ python -m multi_agent --repo ~/git/my-project ask How should we handle the timel
 python -m multi_agent --repo ~/git/my-project ask --max-rounds 5 "What if we changed the setting?"
 ```
 
-The question and answer are saved to two files in your repo root that persist between runs:
-- `.multi_agent_ask_question.md` — the original question
-- `.multi_agent_ask_answer.md` — the consensus answer
-
-Both files are overwritten on the next `ask` invocation. Add them to `.gitignore`.
+The answer is displayed in the terminal and saved in the structured run log (see below).
 
 ### Run logs
 

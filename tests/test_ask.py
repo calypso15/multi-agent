@@ -1,4 +1,4 @@
-"""Tests for the ask command (temp-file consensus Q&A)."""
+"""Tests for the ask command (consensus Q&A)."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -97,8 +97,8 @@ class TestRunAsk:
         resolved = _make_resolved()
         return _run_ask(resolved, tmp_path, question)
 
-    def test_question_and_answer_files_persist(self, tmp_path):
-        """Both question and answer files remain after a successful run."""
+    def test_temp_file_cleaned_up(self, tmp_path):
+        """Answer temp file is removed after a successful run."""
         mock_result = type("R", (), {
             "merged_texts": {".multi_agent_ask_answer.md": "The answer."},
             "consensus_reached": True,
@@ -122,13 +122,10 @@ class TestRunAsk:
 
             self._call(tmp_path, "What is X?")
 
-        assert (tmp_path / ".multi_agent_ask_question.md").exists()
-        assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
-        assert (tmp_path / ".multi_agent_ask_answer.md").exists()
-        assert (tmp_path / ".multi_agent_ask_answer.md").read_text() == "The answer."
+        assert not (tmp_path / ".multi_agent_ask_answer.md").exists()
 
-    def test_answer_file_written_with_merged_text(self, tmp_path):
-        """The answer file on disk contains the consensus answer, not the question."""
+    def test_answer_printed(self, tmp_path):
+        """The consensus answer is printed to the console."""
         mock_result = type("R", (), {
             "merged_texts": {".multi_agent_ask_answer.md": "The answer is 42."},
             "consensus_reached": True,
@@ -157,8 +154,8 @@ class TestRunAsk:
         assert exit_code == 0
         mock_print_answer.assert_called_once_with("The answer is 42.")
 
-    def test_no_edits_leaves_question_in_both_files(self, tmp_path):
-        """When agents propose no edits, question file persists, answer has question."""
+    def test_no_edits_cleans_up(self, tmp_path):
+        """When agents propose no edits, temp file is still cleaned up."""
         with patch("multi_agent.cli._create_backend"), \
              patch("multi_agent.context.load_reference", return_value={}), \
              patch("multi_agent.context.count_uncommitted_reference", return_value=0), \
@@ -175,9 +172,7 @@ class TestRunAsk:
 
             self._call(tmp_path, "What is X?")
 
-        assert (tmp_path / ".multi_agent_ask_question.md").read_text() == "What is X?"
-        # Answer file still has the question (no edits were applied)
-        assert (tmp_path / ".multi_agent_ask_answer.md").read_text() == "What is X?"
+        assert not (tmp_path / ".multi_agent_ask_answer.md").exists()
 
     def test_question_written_to_answer_file_before_loop(self, tmp_path):
         """The question is in the answer file when the iteration loop reads it."""

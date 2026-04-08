@@ -559,7 +559,7 @@ def _run_ask(
     repo_root: Path,
     question: str,
 ) -> int:
-    """Write question to two files, run consensus on the answer file, persist both."""
+    """Write question to a temp file, run consensus, clean up afterward."""
     from multi_agent.consensus import run_iteration_loop
 
     first_settings = next(iter(resolved.agent_settings.values()))
@@ -569,13 +569,10 @@ def _run_ask(
     backend = _create_backend(resolved)
     on_phase = _make_phase_handler(resolved)
 
-    question_name = ".multi_agent_ask_question.md"
     answer_name = ".multi_agent_ask_answer.md"
-    question_path = repo_root / question_name
     answer_path = repo_root / answer_name
 
-    # Write the question to both files; agents will edit the answer file.
-    question_path.write_text(question)
+    # Write the question so agents have a file to edit.
     answer_path.write_text(question)
 
     print_header(
@@ -584,31 +581,32 @@ def _run_ask(
     if is_verbose():
         print_resolved_config(resolved)
 
-    result = asyncio.run(run_iteration_loop(
-        resolved, str(repo_root), backend,
-        target_files=[answer_name],
-        on_progress=print_progress,
-        on_phase=on_phase,
-    ))
+    try:
+        result = asyncio.run(run_iteration_loop(
+            resolved, str(repo_root), backend,
+            target_files=[answer_name],
+            on_progress=print_progress,
+            on_phase=on_phase,
+        ))
 
-    from multi_agent.logging import write_run_log
-    write_run_log(repo_root, result, resolved)
+        from multi_agent.logging import write_run_log
+        write_run_log(repo_root, result, resolved)
 
-    if not result.merged_texts:
-        print_no_edits()
+        if not result.merged_texts:
+            print_no_edits()
+            print_token_usage(result.total_usage, result.total_duration_seconds)
+            return 0
+
+        answer = result.merged_texts.get(answer_name, "")
+
+        _print_consensus_status(result, resolved)
+
+        print_answer(answer)
         print_token_usage(result.total_usage, result.total_duration_seconds)
         return 0
-
-    answer = result.merged_texts.get(answer_name, "")
-
-    # Persist the answer to disk so it survives after the console closes.
-    answer_path.write_text(answer)
-
-    _print_consensus_status(result, resolved)
-
-    print_answer(answer)
-    print_token_usage(result.total_usage, result.total_duration_seconds)
-    return 0
+    finally:
+        # Clean up temp file — the answer is in the run log and console output.
+        answer_path.unlink(missing_ok=True)
 
 
 @main.command()
