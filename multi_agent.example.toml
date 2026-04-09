@@ -221,6 +221,12 @@ benefit from it.
 Work section by section — propose one edit per paragraph or logical unit \
 rather than rewriting large blocks at once."""
 
+# Commands can inherit from other commands to avoid duplicating prompts.
+# Only the fields you specify are overridden; everything else comes from the base.
+[commands.expand-aggressive]
+inherits = "expand"
+max_rounds = 8
+
 [commands.contract]
 description = "Tighten prose and cut filler via consensus"
 # Use a faster model for contraction — it's mostly deletions

@@ -89,6 +89,7 @@ class CommandConfig:
     description: str = ""
     agents: dict[str, CommandAgentConfig] = field(default_factory=dict)
     propose_instructions: str | None = None
+    inherits: str | None = None
     # Per-agent cascading (None = inherit)
     propose_model: str | None = None
     review_model: str | None = None
@@ -335,6 +336,7 @@ def load_config(
         )
 
     _insert_builtin_commands(config)
+    _resolve_command_inheritance(config)
 
     enabled_agents = {k for k, v in config.agents.items() if v.enabled}
     for name, cmd_cfg in config.commands.items():
@@ -375,6 +377,39 @@ def _insert_builtin_commands(config: MultiAgentConfig) -> None:
                 if val != getattr(blank, fld.name):
                     setattr(merged, fld.name, val)
             config.commands[builtin_name] = merged
+
+
+def _resolve_command_inheritance(config: MultiAgentConfig) -> None:
+    """Resolve ``inherits`` fields so each command is self-contained."""
+    # Snapshot which commands use inherits before resolving any.
+    inheriting = {
+        name: cmd.inherits
+        for name, cmd in config.commands.items()
+        if cmd.inherits is not None
+    }
+    blank = CommandConfig()
+    for name, base_name in inheriting.items():
+        cmd = config.commands[name]
+        if base_name not in config.commands:
+            raise ValueError(
+                f"Command '{name}' inherits from unknown command '{base_name}'"
+            )
+        if base_name in inheriting:
+            raise ValueError(
+                f"Command '{name}' inherits from '{base_name}' which also "
+                f"uses inherits — only single-level inheritance is supported"
+            )
+        base = config.commands[base_name]
+        # Start from a copy of the base, overlay non-default child fields.
+        merged = dataclasses.replace(base)
+        for fld in dataclasses.fields(CommandConfig):
+            if fld.name == "inherits":
+                continue
+            val = getattr(cmd, fld.name)
+            if val != getattr(blank, fld.name):
+                setattr(merged, fld.name, val)
+        merged.inherits = None
+        config.commands[name] = merged
 
 
 # ---------------------------------------------------------------------------

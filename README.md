@@ -250,6 +250,16 @@ weight = 1
 propose_model = "opus"   # use a different model just for this command
 ```
 
+Commands can inherit from other commands to avoid duplicating prompts:
+
+```toml
+[commands.expand-aggressive]
+inherits = "expand"
+max_rounds = 8
+```
+
+Only the fields you specify are overridden; everything else comes from the base. Single-level inheritance only (a base command cannot itself use `inherits`).
+
 The `review` and `ask` commands have built-in defaults and are always available even without a TOML file. All other commands must be defined in config. You can override the default `ask` prompt in TOML under `[commands.ask]`.
 
 ### Example config

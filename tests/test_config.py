@@ -223,3 +223,47 @@ class TestLoadConfig:
         p = _write_toml(tmp_path, _minimal_toml())
         config = load_config(path=p)
         assert config.general.backend == "claude-cli"
+
+    def test_command_inherits_base(self, tmp_path):
+        toml = _minimal_toml(
+            '[commands.expand]\nprompt = "Expand."\nmax_rounds = 5\n'
+            '[commands.expand-aggressive]\n'
+            'inherits = "expand"\nmax_rounds = 10\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
+        cmd = config.commands["expand-aggressive"]
+        assert cmd.prompt == "Expand."  # inherited
+        assert cmd.max_rounds == 10     # overridden
+        assert cmd.inherits is None     # resolved away
+
+    def test_command_inherits_unknown_raises(self, tmp_path):
+        toml = _minimal_toml(
+            '[commands.child]\nprompt = "X"\ninherits = "nonexistent"\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(ValueError, match="unknown command"):
+            load_config(path=p)
+
+    def test_command_inherits_chain_raises(self, tmp_path):
+        toml = _minimal_toml(
+            '[commands.base]\nprompt = "Base."\n'
+            '[commands.middle]\nprompt = "Mid."\ninherits = "base"\n'
+            '[commands.child]\nprompt = "Child."\ninherits = "middle"\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(ValueError, match="single-level"):
+            load_config(path=p)
+
+    def test_command_inherits_builtin(self, tmp_path):
+        """A command can inherit from the built-in review command."""
+        toml = _minimal_toml(
+            '[commands.strict-review]\n'
+            'inherits = "review"\n'
+            'max_rounds = 10\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        config = load_config(path=p)
+        cmd = config.commands["strict-review"]
+        assert "review" in cmd.prompt.lower()  # inherited from default review
+        assert cmd.max_rounds == 10
