@@ -197,6 +197,7 @@ Agents are fully defined in the TOML file. You can add, remove, or customize any
 | `system_prompt` | **required** | The agent's specialty/focus prompt |
 | `display_name` | titlecased key | Human-readable name for terminal output |
 | `enabled` | `true` | Disable an agent to skip it |
+| `weight` | `1` | How much this agent's approval counts toward `consensus_threshold` |
 | `propose_model` | — | Claude model for the propose phase (e.g., `sonnet`) |
 | `review_model` | same as `propose_model` | Model for review rounds (e.g., `haiku` for speed) |
 | `allowed_tools` | `[]` | Tools available during the propose phase (e.g., `["WebSearch", "WebFetch"]`) |
@@ -211,12 +212,12 @@ Define commands in `multi_agent.toml` under `[commands.<name>]`. Each command ne
 |---|---|---|
 | `prompt` | **required** | Task instructions for agents |
 | `description` | — | Shown in `--help` output |
-| `agents` | all enabled | Subset of agents to use (list of agent keys) |
+| `agents` | all enabled | Agents to use — simple list or table with per-agent overrides |
 | `consensus_threshold` | inherits from general | Override consensus threshold for this command |
 | `propose_model` | — | Override agent models for the propose phase |
 | `review_model` | — | Override agent models for review/dissent phases |
 
-Model precedence: command model > agent model > CLI/env default.
+Settings cascade four levels: **command-agent > command > agent > general**. Per-agent overrides within a command take highest priority.
 
 ```toml
 [commands.review]
@@ -228,9 +229,25 @@ description = "Expand files with richer detail via consensus"
 propose_model = "sonnet"
 prompt = "Your goal is to enrich the submitted content. Add vivid descriptions, flesh out thin scenes..."
 
+# Simple agent list
 [commands.deepen-characters]
 agents = ["canon_continuity", "sociopolitical"]
 prompt = "Focus on deepening character voices, adding internal monologue, and making dialogue more distinctive."
+
+# Per-agent overrides within a command
+[commands.lead-review]
+prompt = "Review with the lead agent having final say."
+consensus_threshold = 3
+
+[commands.lead-review.agents.scientific_rigor]
+weight = 2     # lead agent's approval counts as 2
+
+[commands.lead-review.agents.canon_continuity]
+weight = 1
+
+[commands.lead-review.agents.sociopolitical]
+weight = 1
+propose_model = "opus"   # use a different model just for this command
 ```
 
 The `review` and `ask` commands have built-in defaults and are always available even without a TOML file. All other commands must be defined in config. You can override the default `ask` prompt in TOML under `[commands.ask]`.
@@ -251,6 +268,7 @@ review_max_turns = 2
 
 [agents.accuracy]
 display_name = "Accuracy"
+weight = 2                    # lead reviewer — approval counts double
 propose_model = "sonnet"
 review_model = "haiku"
 allowed_tools = ["WebSearch", "WebFetch"]

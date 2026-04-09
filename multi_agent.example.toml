@@ -2,7 +2,7 @@
 # Copy this file to your repository as "multi_agent.toml" and
 # adjust the values to match your project structure.
 #
-# Settings cascade: [general] → [agents.<name>] → [commands.<name>].
+# Settings cascade: [general] → [agents.<name>] → [commands.<name>] → [commands.<name>.agents.<name>].
 # Define defaults at the top level and override per-agent or per-command.
 # If not set at any level, a reasonable default is used.
 #
@@ -35,6 +35,8 @@ min_blocking_severity = "major"               # Minimum severity to block consen
 # "scientific_rigor") is used internally; display_name controls what
 # appears in terminal output. system_prompt is the agent's specialty.
 # Any cascading setting can be overridden here.
+# weight = N  (optional, default 1 — how much this agent's approval
+#              counts toward consensus_threshold)
 
 [agents.scientific_rigor]
 enabled = true
@@ -173,6 +175,12 @@ defy established social science, historical precedent, or common sense.\
 #   propose_model = "..."      (optional — override agent models for propose phase)
 #   review_model = "..."       (optional — override agent models for review phase)
 #
+# Agents can be a simple list or a table with per-agent overrides:
+#   agents = ["alpha", "beta"]                # simple list
+#   [commands.mycommand.agents.alpha]         # per-agent overrides
+#   weight = 2                                # this agent's approval counts as 2
+#   propose_model = "opus"                    # override model just for this command
+#
 # Usage examples:
 #   multi-agent review canon/chapter-03.md
 #   multi-agent review --task expand canon/chapter-03.md
@@ -188,13 +196,8 @@ necessary to fix the issue."""
 
 # --- Ask Command ---
 # The built-in "ask" command lets you pose a question and get a consensus
-# answer from all agents. It writes the question to two files in your repo:
-#   .multi_agent_ask_question.md  — the original question (preserved)
-#   .multi_agent_ask_answer.md    — the consensus answer (persists between runs)
-#
-# Agents "answer" by editing the answer file through the normal consensus
-# loop — propose, review, iterate, arbitrate — then the final merged result
-# is displayed and saved. Both files persist until the next "ask" invocation.
+# answer from all agents. The answer is displayed in the terminal and
+# saved in the structured run log (.multi_agent_runs/).
 #
 # Usage examples:
 #   multi-agent ask "What are the main themes of this story?"
