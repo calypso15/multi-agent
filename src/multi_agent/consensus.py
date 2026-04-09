@@ -466,14 +466,15 @@ async def run_iteration_loop(
     display_names = {k: get_display_name(k, v) for k, v in resolved.agents.items()}
     weights = {name: s.weight for name, s in resolved.agent_settings.items()}
 
-    # Use the first agent's file_patterns for staged file resolution
-    # (all agents see the same target files; per-agent patterns affect references)
-    first_settings = next(iter(resolved.agent_settings.values()))
+    # Union of all agents' file_patterns for file discovery
+    all_patterns = sorted({
+        pat for s in resolved.agent_settings.values() for pat in s.file_patterns
+    })
 
     # 1. Load file contents
     staged_diff: str | None = None
     if target_files is None:
-        staged_files = get_staged_files(root, first_settings.file_patterns)
+        staged_files = get_staged_files(root, all_patterns)
         if not staged_files:
             return IterationResult(
                 consensus_reached=True,
@@ -486,7 +487,7 @@ async def run_iteration_loop(
         file_contents = {}
         for f in staged_files:
             file_contents[str(f)] = get_staged_content(root, f)
-        staged_diff = get_staged_diff(root, first_settings.file_patterns)
+        staged_diff = get_staged_diff(root, all_patterns)
         files_reviewed = [str(f) for f in staged_files]
     else:
         file_contents = {}

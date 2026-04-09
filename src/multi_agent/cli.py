@@ -467,14 +467,16 @@ def _review_common(
 
     from multi_agent.context import get_staged_files, resolve_file_args
 
-    # Use the first agent's file_patterns for file resolution
-    first_settings = next(iter(resolved.agent_settings.values()))
+    # Union of all agents' file_patterns for target file resolution
+    all_patterns = sorted({
+        pat for s in resolved.agent_settings.values() for pat in s.file_patterns
+    })
 
     # If files provided, review those files. Otherwise review staged files.
     if files:
         try:
             file_list = resolve_file_args(
-                list(files), repo_root, first_settings.file_patterns,
+                list(files), repo_root, all_patterns,
             )
         except FileNotFoundError as exc:
             print_error(str(exc))
@@ -482,13 +484,15 @@ def _review_common(
         target_files: list[str] | None = file_list
         files_display = file_list
     else:
-        staged = get_staged_files(repo_root, first_settings.file_patterns)
+        staged = get_staged_files(repo_root, all_patterns)
         if not staged:
             print_no_files()
             sys.exit(0)
         target_files = None  # signals: use staged files
         files_display = [str(f) for f in staged]
 
+    # Use first agent's settings for the header's reference summary display
+    first_settings = next(iter(resolved.agent_settings.values()))
     ref, ref_size_kb, uncommitted = _load_reference_context(repo_root, first_settings)
 
     exit_code = _run_iteration_and_present(
