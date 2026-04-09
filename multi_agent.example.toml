@@ -24,7 +24,7 @@ max_reference_size_kb = 500                   # Max total size of reference cont
 # review_max_turns = 0                        # Max turns per agent in review (0 = unlimited)
 
 # --- Per-run cascading defaults (overridable per-command) ---
-consensus_threshold = 2                       # Approvals needed for consensus
+consensus_threshold = 2                       # Weighted approvals needed for consensus
 max_rounds = 3                                # Max propose-review iterations
 min_severity = "minor"                        # Minimum severity for proposed edits
 min_blocking_severity = "major"               # Minimum severity to block consensus

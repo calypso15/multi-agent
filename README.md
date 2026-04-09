@@ -178,7 +178,7 @@ Place a `multi_agent.toml` in your repository. See `multi_agent.example.toml` fo
 | Option | Default | Description |
 |---|---|---|
 | `file_patterns` | `["*.md", "*.txt"]` | Glob patterns for files to review |
-| `consensus_threshold` | `2` | Minimum approvals required for consensus |
+| `consensus_threshold` | `2` | Minimum weighted approvals required for consensus |
 | `timeout_seconds` | `600` | Per-agent timeout in seconds |
 | `reference_directories` | `["reference"]` | Directories containing established reference files |
 | `max_reference_size_kb` | `500` | Max total size of reference content loaded |
